@@ -246,6 +246,25 @@ export class RealtimeConnection {
     );
   }
 
+  /**
+   * Cumulative RTP byte counters for this peer connection. Bytes received
+   * here were egressed by the Cloudflare SFU; bytes sent are SFU ingress.
+   */
+  async byteTotals(): Promise<{ inboundBytes: number; outboundBytes: number } | null> {
+    if (!this.peer) return null;
+    const stats = await this.peer.getStats();
+    let inboundBytes = 0;
+    let outboundBytes = 0;
+    stats.forEach((report: Record<string, unknown>) => {
+      if (report.type === "inbound-rtp") {
+        inboundBytes += Number(report.bytesReceived) || 0;
+      } else if (report.type === "outbound-rtp") {
+        outboundBytes += Number(report.bytesSent) || 0;
+      }
+    });
+    return { inboundBytes, outboundBytes };
+  }
+
   close() {
     this.peer?.close();
     this.peer = null;

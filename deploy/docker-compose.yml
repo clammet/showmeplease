@@ -1,0 +1,21 @@
+# Production-style deployment: one container serving the frontend and the
+# small backend. Media flows browser <-> Cloudflare Realtime SFU directly.
+#
+#   cp ../.env.example .env   # fill in values
+#   docker compose up -d --build
+#
+# Convex (auth) is external: either convex.dev cloud or a self-hosted
+# instance (https://github.com/get-convex/convex-backend/tree/main/self-hosted);
+# point CONVEX_URL / CONVEX_SITE_URL at it and deploy the functions with
+# `npx convex deploy`.
+
+services:
+  app:
+    build:
+      context: ..
+    image: showmeplease:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env

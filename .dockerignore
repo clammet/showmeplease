@@ -1,0 +1,16 @@
+.git
+.next
+.pnpm-store
+.vinext
+dist
+node_modules
+outputs
+work
+
+.env*
+
+Dockerfile*
+README.md
+*.log
+*.tsbuildinfo
+.convex

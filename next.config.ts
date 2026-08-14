@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // The frontend is a static export; the Node backend (server/) serves it and
+  // handles /api.
+  output: "export",
 };
 
 export default nextConfig;

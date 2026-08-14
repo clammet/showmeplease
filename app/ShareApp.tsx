@@ -30,6 +30,7 @@ import {
   SessionOptions,
   SharedTrack,
 } from "@/lib/realtime";
+import AccountControls from "./AccountControls";
 
 type Role = "creator" | "viewer";
 type AppMode = "landing" | "session";
@@ -429,6 +430,20 @@ export default function ShareApp() {
   useEffect(() => {
     if (mode !== "session") return;
     setDockPosition({ x: 20, y: Math.max(20, window.innerHeight - 82) });
+  }, [mode]);
+
+  // Report cumulative WebRTC byte counters so the backend can meter SFU
+  // egress (what this client receives) and ingress (what it publishes).
+  useEffect(() => {
+    if (mode !== "session") return;
+    const timer = setInterval(() => {
+      void connectionRef.current?.byteTotals().then((totals) => {
+        if (totals && socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({ type: "stats", ...totals }));
+        }
+      });
+    }, 10000);
+    return () => clearInterval(timer);
   }, [mode]);
 
   const sendSocket = (value: unknown) => {
@@ -930,6 +945,8 @@ export default function ShareApp() {
         <header className="brand-bar" aria-label="Showmeplease">
           <span className="brand-mark"><MonitorUp size={17} /></span>
           <span>showmeplease</span>
+          <span className="brand-bar-spacer" />
+          <AccountControls />
         </header>
 
         <section className="start-panel" aria-labelledby="start-title">

@@ -908,3 +908,266 @@ select:focus-visible,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* --- account controls (landing header) --- */
+
+.brand-bar-spacer {
+  flex: 1;
+}
+
+.account-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-name {
+  font-size: 0.85rem;
+  color: var(--muted);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.account-button:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.auth-callback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+/* --- admin dashboard --- */
+
+.admin-page {
+  min-height: 100vh;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 22px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-back {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.admin-back:hover {
+  color: var(--green);
+}
+
+.admin-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.admin-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.admin-tile {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.admin-tile-icon {
+  display: inline-flex;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.admin-tile-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.admin-tile-body strong {
+  font-size: 1.25rem;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.admin-tile-body span {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.admin-tile-body small {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.admin-card,
+.admin-chart {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+
+.admin-card h2,
+.admin-chart h2 {
+  font-size: 0.95rem;
+  margin: 0 0 10px;
+}
+
+.admin-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-chart-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.admin-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Slightly richer than --green so thin bars keep chroma on white
+   (validated against the chart surface). */
+.admin-chart-bar {
+  fill: #27824f;
+}
+
+.admin-chart-bar.hovered {
+  fill: var(--green-dark);
+}
+
+.admin-chart-grid {
+  stroke: var(--line);
+  stroke-dasharray: 3 4;
+  stroke-width: 1;
+}
+
+.admin-chart-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.admin-chart-label {
+  fill: var(--muted);
+  font-size: 10px;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.admin-table th {
+  text-align: left;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-table td {
+  padding: 8px 10px 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-table tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-code {
+  font-family: var(--font-geist-mono), monospace;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.admin-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.admin-badge.on {
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+
+.admin-badge.off {
+  background: #f3ece5;
+  color: var(--danger);
+}
+
+.admin-kill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--danger);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.admin-kill:hover {
+  border-color: var(--danger);
+}
+
+.admin-muted {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.admin-footer {
+  text-align: center;
+}

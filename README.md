@@ -1,45 +1,127 @@
 # showmeplease
 
-A small, functional screen-sharing app built with pnpm, TypeScript, React, WebRTC, Cloudflare Realtime SFU, Durable Objects, and Lucide icons.
+A small, functional screen-sharing app built with pnpm, TypeScript, React,
+WebRTC, the Cloudflare Realtime SFU, Convex, and Lucide icons.
 
 ## What it does
 
 - Creates short, shareable session codes.
 - Captures the presenter screen locally for an immediate preview.
 - Delays publishing media to Cloudflare Realtime until a viewer is waiting.
-- Relays the screen, system audio, presenter microphone, and permitted viewer microphones as separate SFU tracks.
-- Keeps presence and the last 100 chat messages in a session's in-memory WebSocket hub.
+- Relays the screen, system audio, presenter microphone, and permitted viewer
+  microphones as separate SFU tracks.
+- Keeps presence and the last 100 chat messages in a per-session in-memory
+  WebSocket hub.
+- Optional Google sign-in (and anonymous identities) via Convex and
+  [`@clammet/convex-googly-auth`](https://github.com/clammet/convex-googly-auth).
+- Admin dashboard at `/admin` with live sessions, an SFU egress monitor, and a
+  terminate-session action.
 - Retries viewer WebSocket and WebRTC connections with exponential backoff.
 - Stores presenter defaults in browser local storage.
 
-## Local setup
+## Architecture
 
-1. Create a Cloudflare Realtime SFU app in the Cloudflare dashboard.
-2. Copy `.dev.vars.example` to `.dev.vars` and add the Realtime App ID and secret.
-3. Install and run the app:
+One Docker container serves everything except media and auth:
 
-```sh
-pnpm install
-pnpm dev
+```
+browser ── static frontend + /api ──► Node backend (this container)
+   │                                    ├─ session hub (codes, presence, chat, WebSockets)
+   │                                    ├─ Realtime proxy (holds the SFU app secret)
+   │                                    ├─ egress monitor + admin API
+   ├── WebRTC media ──► Cloudflare Realtime SFU   (the heavy lifting)
+   └── auth + profiles ──► Convex deployment      (googly-auth component)
 ```
 
-Open `http://localhost:3000` in two browser windows to test a presenter and viewer.
+- The browser talks to the backend for session control; the Realtime secret
+  never reaches clients. Media flows directly between browsers and the
+  Cloudflare SFU.
+- Each browser owns one Realtime session (one `RTCPeerConnection`). Presenter
+  tracks are published only after the hub reports a waiting viewer; viewers
+  pull those tracks, and permitted viewer microphones are published back as
+  separate tracks.
+- Session state is in-memory in the single backend process (chat is
+  intentionally ephemeral). Convex stores only identities/profiles.
+- **Egress monitor:** every client reports its cumulative WebRTC byte counters
+  over the session WebSocket; bytes a client receives are exactly what the SFU
+  egressed, so the backend reconstructs per-session and global egress without
+  Cloudflare credentials. Optionally, the backend also polls Cloudflare's
+  GraphQL analytics (`callsUsageAdaptiveGroups`) for the metered 24 h figure
+  shown in the dashboard.
+
+## Local development
+
+```sh
+pnpm devsetup   # install deps, set up a *local* Convex instance, write .env.local
+pnpm dev        # local Convex + backend (:8787) + web (:3000)
+```
+
+Open `http://127.0.0.1:3000` in two browser windows to test presenter and
+viewer, and `http://127.0.0.1:3000/admin` for the dashboard
+(`ADMIN_ALLOW_INSECURE=1` is set for dev, so no sign-in is needed locally).
+
+`devsetup` uses the Convex CLI's anonymous local deployment — a real Convex
+backend running on your machine, no account required. Re-run it whenever you
+change auth-related values in `.env.local`; it forwards them to the Convex
+deployment.
+
+To exercise real media relay locally, create a Realtime SFU app in the
+Cloudflare dashboard and fill `REALTIME_APP_ID` / `REALTIME_APP_SECRET` in
+`.env.local`. To enable Google sign-in, create an OAuth client and fill
+`AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` (see `.env.example` for everything).
 
 ## Commands
 
 ```sh
-pnpm dev
-pnpm build
+pnpm devsetup       # one-time (idempotent) dev environment setup
+pnpm dev            # convex + backend + web with proxy/HMR
+pnpm build          # static frontend export + bundled backend (dist/)
+pnpm start          # run the built backend (serves dist/client)
+pnpm test           # build + integration tests against the built backend
 pnpm lint
-pnpm test
+pnpm image:build    # docker build
+pnpm image:publish  # multi-arch buildx push (IMAGE_NAME=… IMAGE_TAG=…)
 ```
 
-## Architecture
+## Docker deployment
 
-The browser talks only to the app Worker; the Realtime secret is never sent to clients. One Durable Object is addressed by each six-character share code and provides session presence, authorization, track announcements, and chat over WebSockets. Chat messages are intentionally not written to durable storage.
+The image contains the static frontend and the Node backend in one container;
+Cloudflare Realtime does the media heavy lifting and Convex handles auth.
 
-Each browser owns one Cloudflare Realtime session (one `RTCPeerConnection`). Presenter video/audio tracks are published only after the Durable Object reports a waiting viewer. Viewers pull those tracks. When viewer microphones are enabled, each viewer publishes a separate audio track and the presenter pulls it into the existing connection—there is no shared reply DataChannel or single-speaker bottleneck.
+```sh
+pnpm image:build
+docker run --rm -p 8080:8080 \
+  -e REALTIME_APP_ID=... \
+  -e REALTIME_APP_SECRET=... \
+  -e CONVEX_URL=https://your-deployment.convex.cloud \
+  -e CONVEX_SITE_URL=https://your-deployment.convex.site \
+  -e AUTH_GOOGLE_ID=...apps.googleusercontent.com \
+  -e ADMIN_EMAILS=you@example.com \
+  showmeplease:latest
+```
 
-## Production notes
+There is also a compose file in `deploy/docker-compose.yml`. The container
+exposes port `8080` and `/healthz` for readiness/liveness. All configuration
+is runtime environment (`.env.example` documents every variable) — the
+frontend fetches `/api/config` at boot, so one image works for any deployment.
 
-Deploy the built Worker with a `SESSION_HUB` Durable Object binding for the exported `SessionHub` class and set `REALTIME_APP_ID` and `REALTIME_APP_SECRET` as encrypted Worker secrets. The Vite development configuration contains the matching local binding and initial Durable Object migration.
+Convex in production is either [convex.dev](https://convex.dev) cloud or a
+[self-hosted Convex](https://github.com/get-convex/convex-backend/tree/main/self-hosted)
+instance; deploy the functions with `npx convex deploy` and set
+`AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `SITE_URL` (your public origin), and
+`ADMIN_EMAILS` on that deployment.
+
+## Admin dashboard
+
+`/admin` requires signing in with a Google account listed in `ADMIN_EMAILS`
+(the backend verifies the Google ID token issued through googly-auth; Convex
+uses the same allowlist to show the Admin link). It shows:
+
+- active sessions, connected clients, sessions created, uptime
+- SFU egress: last hour, since start, per-minute chart, per-session totals
+- optional Cloudflare-metered 24 h egress (`CLOUDFLARE_API_TOKEN` +
+  `CLOUDFLARE_ACCOUNT_ID`, token scope Account Analytics:Read)
+- recently ended sessions and an "End" action that terminates a session for
+  everyone
+
+Client-reported byte counters are a close reconstruction of SFU egress;
+Cloudflare's own metering remains authoritative for billing.
