@@ -51,6 +51,7 @@ const MAX_VIEWER_TOKENS = 512;
 const MAX_MESSAGES = 100;
 const IDLE_ROOM_TTL_MS = 60 * 60_000;
 const MAX_ENDED_SESSIONS = 50;
+const STATUS_RECENT_ACTIVITY_MS = 2 * 60_000;
 
 function createCode() {
   const bytes = new Uint8Array(6);
@@ -138,6 +139,28 @@ export class SessionHub {
 
   activeRooms(): Room[] {
     return Array.from(this.rooms.values()).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  /**
+   * Aggregate, non-sensitive counters for the unauthenticated /api/status
+   * probe. `busy` is true while anyone is connected or a room saw activity
+   * within `recentMs` (covers a presenter mid-reconnect between retries), so
+   * a deployment can hold off restarting the container until sessions drain.
+   */
+  status(recentMs = STATUS_RECENT_ACTIVITY_MS) {
+    const now = Date.now();
+    let connectedClients = 0;
+    let recentlyActive = 0;
+    for (const room of this.rooms.values()) {
+      connectedClients += room.clients.size;
+      if (room.clients.size > 0 || now - room.lastActivity < recentMs) recentlyActive += 1;
+    }
+    return {
+      sessions: this.rooms.size,
+      activeSessions: recentlyActive,
+      connectedClients,
+      busy: recentlyActive > 0,
+    };
   }
 
   endedSessions(): EndedSession[] {

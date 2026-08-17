@@ -100,7 +100,10 @@ docker run --rm -p 8080:8080 \
 ```
 
 There is also a compose file in `deploy/docker-compose.yml`. The container
-exposes port `8080` and `/healthz` for readiness/liveness. All configuration
+exposes port `8080`, `/healthz` for readiness/liveness, and an unauthenticated
+`/api/status` returning aggregate counts (`sessions`, `activeSessions`,
+`connectedClients`, `busy`; never session codes) so deployment tooling can
+defer restarts — e.g. image updates — until `busy` is false. All configuration
 is runtime environment (`.env.example` documents every variable) — the
 frontend fetches `/api/config` at boot, so one image works for any deployment.
 

@@ -73,6 +73,12 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   const health = await fetch(`${base}/healthz`);
   assert.equal(health.status, 200);
 
+  // Status probe is idle before any session exists.
+  const idle = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(idle.ok, true);
+  assert.equal(idle.busy, false);
+  assert.equal(idle.connectedClients, 0);
+
   // Config endpoint reports auth disabled without Convex env.
   const config = await (await fetch(`${base}/api/config`)).json();
   assert.equal(config.auth, null);
@@ -104,6 +110,13 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   const creatorWelcome = nextMessage(creator, "welcome");
   await once(creator, "open");
   assert.deepEqual((await creatorWelcome).options, DEFAULT_OPTIONS);
+
+  // Status probe reports the live session (counts only, never codes).
+  const busy = await (await fetch(`${base}/api/status`)).json();
+  assert.equal(busy.busy, true);
+  assert.equal(busy.connectedClients, 1);
+  assert.equal(busy.activeSessions, 1);
+  assert.doesNotMatch(JSON.stringify(busy), new RegExp(created.code));
 
   // A bad token is rejected.
   const intruder = new WebSocket(

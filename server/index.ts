@@ -57,6 +57,14 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // Unauthenticated liveness-plus-load probe: aggregate counts only (no
+    // session codes). Deployment tooling uses `busy` to defer container
+    // restarts (e.g. image updates) until no session is in progress.
+    if (pathname === "/api/status" && request.method === "GET") {
+      sendJson(response, 200, { ok: true, uptimeMs: Date.now() - hub.startedAt, ...hub.status() });
+      return;
+    }
+
     // Runtime configuration for the static frontend (Docker-friendly: no
     // rebuild needed to point at a different Convex deployment).
     if (pathname === "/api/config" && request.method === "GET") {
