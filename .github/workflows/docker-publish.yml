@@ -53,6 +53,11 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # Skip Buildx's built-in provenance/SBOM attestation, which shows up as an
+          # extra "unknown/unknown" manifest in the GHCR listing. Signed provenance
+          # is still published by the attest-build-provenance step below.
+          provenance: false
+          sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
