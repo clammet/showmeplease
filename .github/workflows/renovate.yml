@@ -1,7 +1,8 @@
 # Self-hosted Renovate: turns every upstream release (npm packages, base
 # images, action digests, the deployed image digest, pnpm itself) into a PR.
-# Renovate merges minor/patch/digest PRs itself once CI is green on a later
-# run; majors and red PRs sit until a human deals with them.
+# Minor/patch/digest PRs merge via GitHub auto-merge once CI is green (the
+# "protect main" ruleset makes both CI checks required); majors and red PRs
+# sit until a human deals with them.
 #
 # Authenticates as a GitHub App (repository secrets RENOVATE_APP_ID and
 # RENOVATE_APP_PRIVATE_KEY; the app must be installed on this repo with

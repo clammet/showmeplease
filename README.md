@@ -132,8 +132,10 @@ turns each upstream release into a PR:
 
 `renovate.json5` holds the policy; `.github/workflows/renovate.yml` runs
 Renovate every 4 hours. CI (lint, build, tests, and a full image build) runs
-on every PR. Renovate merges minor/patch/pin/digest PRs itself once all
-checks are green; majors and anything with a red check wait for a human. npm
+on every PR. Minor/patch/pin/digest PRs merge via GitHub auto-merge once all
+checks are green — a ruleset on `main` makes both CI checks required (repo
+admins bypass it, so direct pushes still work) — while majors and anything
+with a red check wait for a human. npm
 updates wait 3 days after release before being taken (compromised packages
 are usually yanked within days), except `@clammet/*` packages, which are
 taken immediately. A weekly Trivy scan checks the published `:latest` image
