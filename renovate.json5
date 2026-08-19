@@ -1,0 +1,54 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    // Pins Docker images and GitHub Actions by digest, pins devDependencies,
+    // enables the dependency dashboard issue and config-migration PRs.
+    "config:best-practices",
+    // This is an app, not a library: keep production dependencies pinned
+    // exactly too.
+    ":pinAllExceptPeerDependencies",
+    // Updates env vars annotated with `# renovate: datasource=... depName=...`
+    // in workflows — used for RENOVATE_VERSION in renovate.yml.
+    "customManagers:githubActionsVersions",
+  ],
+
+  // File PRs for known-vulnerable versions from the OSV database, not just
+  // when a regular update happens to exist.
+  osvVulnerabilityAlerts: true,
+
+  // Renovate merges automerge-eligible PRs itself once every check on the
+  // branch is green (on a subsequent run). This avoids GitHub's native
+  // auto-merge, which would merge immediately unless branch protection with
+  // required checks is configured — and main takes direct pushes today.
+  platformAutomerge: false,
+
+  // Refresh the lockfile weekly so transitive deps don't rot between direct
+  // updates; automerges under the same green-CI rule.
+  lockFileMaintenance: {
+    enabled: true,
+    automerge: true,
+  },
+
+  packageRules: [
+    {
+      description: "Wait out fresh npm releases — registry malware is usually yanked within days, and automerge makes same-hour compromise a real risk",
+      matchDatasources: ["npm"],
+      minimumReleaseAge: "3 days",
+    },
+    {
+      description: "Own packages are trusted; take them immediately",
+      matchPackageNames: ["@clammet/**"],
+      minimumReleaseAge: null,
+    },
+    {
+      description: "Automerge minor/patch and pin/digest updates once CI (lint+build+test and the image build) is green",
+      matchUpdateTypes: ["minor", "patch", "pin", "pinDigest", "digest"],
+      automerge: true,
+    },
+    {
+      description: "Majors wait for a human",
+      matchUpdateTypes: ["major"],
+      automerge: false,
+    },
+  ],
+}

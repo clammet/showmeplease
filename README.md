@@ -113,6 +113,33 @@ instance; deploy the functions with `npx convex deploy` and set
 `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `SITE_URL` (your public origin), and
 `ADMIN_EMAILS` on that deployment.
 
+## Dependency pinning & updates
+
+Everything the repo consumes is pinned exactly, and a self-hosted Renovate
+turns each upstream release into a PR:
+
+- npm packages: exact versions in `package.json`, resolved by
+  `pnpm-lock.yaml`; pnpm itself carries its sha512 in the `packageManager`
+  field, and CI's Node version is pinned in `.node-version`.
+- Docker base image and the `# syntax` directive: tag + sha256 digest in the
+  `Dockerfile`.
+- GitHub Actions: full commit SHAs, with the release version as a comment.
+- Deployed image: `deploy/docker-compose.yml` references
+  `ghcr.io/clammet/showmeplease` by digest, so the server runs exactly the
+  image CI built and tested.
+- Anything built from source in the future gets the same treatment: pinned
+  version plus a checksum verified before use.
+
+`renovate.json5` holds the policy; `.github/workflows/renovate.yml` runs
+Renovate every 4 hours. CI (lint, build, tests, and a full image build) runs
+on every PR. Renovate merges minor/patch/pin/digest PRs itself once all
+checks are green; majors and anything with a red check wait for a human. npm
+updates wait 3 days after release before being taken (compromised packages
+are usually yanked within days), except `@clammet/*` packages, which are
+taken immediately. A weekly Trivy scan checks the published `:latest` image
+for CVEs disclosed since the last merge, fails the run on fixable
+HIGH/CRITICAL findings, and reports to the repo's Security tab.
+
 ## Admin dashboard
 
 `/admin` requires signing in with a Google account listed in `ADMIN_EMAILS`
