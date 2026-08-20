@@ -16,6 +16,11 @@
   // when a regular update happens to exist.
   osvVulnerabilityAlerts: true,
 
+  // Fleet-standard soak for every datasource: a fresh npm release or a
+  // force-moved upstream tag should not automerge within one cycle; registry
+  // malware is usually yanked within days. Vulnerability fix PRs skip it.
+  minimumReleaseAge: "3 days",
+
   // Use GitHub's native auto-merge: the "protect main" ruleset requires both
   // CI checks, so eligible PRs merge minutes after CI goes green instead of
   // waiting for the next Renovate run. Repo admins bypass the ruleset, so
@@ -30,11 +35,6 @@
   },
 
   packageRules: [
-    {
-      description: "Wait out fresh npm releases — registry malware is usually yanked within days, and automerge makes same-hour compromise a real risk",
-      matchDatasources: ["npm"],
-      minimumReleaseAge: "3 days",
-    },
     {
       description: "Own packages are trusted; take them immediately",
       matchPackageNames: ["@clammet/**"],
@@ -57,14 +57,20 @@
       automerge: false,
     },
     {
-      description: "Same soak for Docker images and Actions as for npm — a force-moved upstream tag should not automerge within one 4-hour cycle",
-      matchDatasources: ["docker", "github-tags", "github-releases"],
-      minimumReleaseAge: "3 days",
-    },
-    {
       description: "Our own published image is exempt: digest refreshes in deploy/ should land as soon as CI publishes",
       matchPackageNames: ["ghcr.io/clammet/showmeplease"],
       minimumReleaseAge: null,
+    },
+    {
+      description: "Pins and digest refreshes point at code that already shipped - no soak needed",
+      matchUpdateTypes: ["pin", "pinDigest", "digest"],
+      minimumReleaseAge: null,
+    },
+    {
+      description: "Renovate engine: several releases a day, so take the weekly one; no digest pin because the annotated RENOVATE_VERSION env var holds a plain tag",
+      matchDepNames: ["ghcr.io/renovatebot/renovate"],
+      schedule: ["before 6am on monday"],
+      pinDigests: false,
     },
   ],
 }

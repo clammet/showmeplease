@@ -4,8 +4,8 @@
 # "protect main" ruleset makes both CI checks required); majors and red PRs
 # sit until a human deals with them.
 #
-# Authenticates as a GitHub App (repository secrets RENOVATE_APP_ID and
-# RENOVATE_APP_PRIVATE_KEY; the app must be installed on this repo with
+# Authenticates as a GitHub App (repository variable RENOVATE_APP_CLIENT_ID and
+# secret RENOVATE_APP_PRIVATE_KEY; the app must be installed on this repo with
 # contents, pull requests, issues, and workflows read/write plus checks and
 # commit statuses read). An app token — not GITHUB_TOKEN — is required so
 # Renovate's PRs trigger the CI workflow above.
@@ -30,8 +30,12 @@ permissions:
   actions: write
 
 env:
-  # renovate: datasource=npm depName=renovate
-  RENOVATE_VERSION: 44.34.3
+  # Exact Renovate engine pin; the action's own default is the floating `44`
+  # tag. Renovate bumps it weekly through the customManagers:githubActionsVersions
+  # preset in the repo's Renovate config (the annotation must stay on the line
+  # directly above the variable).
+  # renovate: datasource=docker depName=ghcr.io/renovatebot/renovate
+  RENOVATE_VERSION: 44.35.4
 
 jobs:
   renovate:
@@ -56,7 +60,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.RENOVATE_APP_ID }}
+          client-id: ${{ vars.RENOVATE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
 
       - name: Run Renovate
