@@ -50,5 +50,21 @@
       matchUpdateTypes: ["major"],
       automerge: false,
     },
+    {
+      description: "0.x minors and pre-release bumps are breaking by semver convention (vitejs/plugin-rsc, vinext) — hold them for a human",
+      matchCurrentVersion: "<1.0.0",
+      matchUpdateTypes: ["minor"],
+      automerge: false,
+    },
+    {
+      description: "Same soak for Docker images and Actions as for npm — a force-moved upstream tag should not automerge within one 4-hour cycle",
+      matchDatasources: ["docker", "github-tags", "github-releases"],
+      minimumReleaseAge: "3 days",
+    },
+    {
+      description: "Our own published image is exempt: digest refreshes in deploy/ should land as soon as CI publishes",
+      matchPackageNames: ["ghcr.io/clammet/showmeplease"],
+      minimumReleaseAge: null,
+    },
   ],
 }
