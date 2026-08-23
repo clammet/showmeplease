@@ -50,7 +50,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.67.0",
     "vinext": "1.0.0-beta.7",
-    "vite": "8.2.1",
+    "vite": "8.2.2",
     "ws": "8.21.3"
   },
   "type": "module",
