@@ -36,11 +36,6 @@
 
   packageRules: [
     {
-      description: "Own packages are trusted; take them immediately",
-      matchPackageNames: ["@clammet/**"],
-      minimumReleaseAge: null,
-    },
-    {
       description: "Automerge minor/patch and pin/digest updates once CI (lint+build+test and the image build) is green",
       matchUpdateTypes: ["minor", "patch", "pin", "pinDigest", "digest"],
       automerge: true,
