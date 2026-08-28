@@ -45,14 +45,15 @@ browser ── static frontend + /api ──► Node backend (this container)
   over the session WebSocket; bytes a client receives are exactly what the SFU
   egressed, so the backend reconstructs per-session and global egress without
   Cloudflare credentials. Optionally, the backend also polls Cloudflare's
-  GraphQL analytics (`callsUsageAdaptiveGroups`) for the metered 24 h figure
-  shown in the dashboard.
+  GraphQL analytics (`callsUsageAdaptiveGroups` and
+  `callsTurnUsageAdaptiveGroups`) for account-wide Realtime daily and
+  billing-period usage shown in the dashboard.
 
 ## Local development
 
 ```sh
 pnpm devsetup   # install deps, set up a *local* Convex instance, write .env.local
-pnpm dev        # local Convex + backend (:8787) + web (:3000)
+pnpm dev        # sync local auth env, then start Convex + backend (:8787) + web (:3000)
 ```
 
 Open `http://127.0.0.1:3000` in two browser windows to test presenter and
@@ -92,8 +93,8 @@ pnpm image:build
 docker run --rm -p 8080:8080 \
   -e REALTIME_APP_ID=... \
   -e REALTIME_APP_SECRET=... \
-  -e CONVEX_URL=https://your-deployment.convex.cloud \
-  -e CONVEX_SITE_URL=https://your-deployment.convex.site \
+  -e VITE_CONVEX_URL=https://your-deployment.convex.cloud \
+  -e VITE_CONVEX_SITE_URL=https://your-deployment.convex.site \
   -e AUTH_GOOGLE_ID=...apps.googleusercontent.com \
   -e ADMIN_EMAILS=you@example.com \
   showmeplease:latest
@@ -149,9 +150,13 @@ HIGH/CRITICAL findings, and reports to the repo's Security tab.
 uses the same allowlist to show the Admin link). It shows:
 
 - active sessions, connected clients, sessions created, uptime
-- SFU egress: last hour, since start, per-minute chart, per-session totals
-- optional Cloudflare-metered 24 h egress (`CLOUDFLARE_API_TOKEN` +
-  `CLOUDFLARE_ACCOUNT_ID`, token scope Account Analytics:Read)
+- SFU egress: last day, selected billing-period total, 15-minute chart,
+  per-session totals
+- optional account-wide Cloudflare Realtime SFU + TURN daily graph and
+  billing-period progress against the shared 1,000 GB free tier, with a
+  browser-persisted billing-period start-date picker
+  (`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, token scope Account
+  Analytics:Read)
 - recently ended sessions and an "End" action that terminates a session for
   everyone
 

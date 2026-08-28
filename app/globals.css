@@ -1079,6 +1079,14 @@ select:focus-visible,
   fill: var(--green-dark);
 }
 
+.admin-chart-bar.cloudflare {
+  fill: #4f70c8;
+}
+
+.admin-chart-bar.cloudflare.hovered {
+  fill: #3454a5;
+}
+
 .admin-chart-grid {
   stroke: var(--line);
   stroke-dasharray: 3 4;
@@ -1094,6 +1102,90 @@ select:focus-visible,
   fill: var(--muted);
   font-size: 10px;
   font-family: var(--font-geist-mono), monospace;
+}
+
+.admin-billing-control {
+  display: grid;
+  grid-template-columns: auto auto minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 2px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--green-soft);
+  font-size: 0.76rem;
+}
+
+.admin-billing-control label {
+  font-weight: 600;
+}
+
+.admin-billing-control input {
+  min-width: 138px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+}
+
+.admin-billing-control span {
+  color: var(--muted);
+}
+
+.admin-billing-control button {
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--green-dark);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-billing-control button:hover {
+  text-decoration: underline;
+}
+
+.admin-usage-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.admin-usage-head strong {
+  color: var(--ink);
+}
+
+.admin-usage-track {
+  height: 8px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.admin-usage-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #4f70c8;
+}
+
+.admin-chart-empty {
+  margin: 28px 0 12px;
+}
+
+.admin-chart-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 0.72rem;
 }
 
 .admin-table {
@@ -1170,4 +1262,14 @@ select:focus-visible,
 
 .admin-footer {
   text-align: center;
+}
+
+@media (max-width: 600px) {
+  .admin-billing-control {
+    grid-template-columns: 1fr auto;
+  }
+
+  .admin-billing-control span {
+    grid-column: 1 / -1;
+  }
 }

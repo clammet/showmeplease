@@ -5,7 +5,11 @@ import { WebSocketServer } from "ws";
 import type { SessionOptions } from "../lib/realtime";
 import { checkAdmin } from "./adminAuth";
 import { loadEnvFiles } from "./env";
-import { CloudflareUsagePoller } from "./egress";
+import {
+  CLOUDFLARE_FREE_TIER_BYTES,
+  CloudflareUsagePoller,
+  utcBillingPeriod,
+} from "./egress";
 import { readJson, sendJson } from "./http";
 import { SessionHub } from "./hub";
 import { handleRealtimeProxy } from "./realtimeProxy";
@@ -16,6 +20,17 @@ loadEnvFiles();
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? "0.0.0.0";
 
+// These public Convex endpoints use the same Vite-prefixed names managed by
+// the Convex CLI. Defining parallel CONVEX_* aliases makes Convex reject the
+// environment as ambiguous.
+const convexUrl = process.env.VITE_CONVEX_URL;
+const convexSiteUrl = process.env.VITE_CONVEX_SITE_URL;
+const googleClientId = process.env.AUTH_GOOGLE_ID;
+const authConfig =
+  convexUrl && convexSiteUrl && googleClientId
+    ? { convexUrl, convexSiteUrl, googleClientId }
+    : null;
+
 // In the container the bundle lives in dist/backend and the frontend export
 // in dist/client; when run from source (tsx) the same relative layout holds.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -25,11 +40,10 @@ const statics = new StaticServer(staticRoot);
 const hub = new SessionHub();
 
 const cloudflarePoller =
-  process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID && process.env.REALTIME_APP_ID
+  process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID
     ? new CloudflareUsagePoller({
         apiToken: process.env.CLOUDFLARE_API_TOKEN,
         accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
-        appId: process.env.REALTIME_APP_ID,
       })
     : null;
 cloudflarePoller?.start();
@@ -68,15 +82,7 @@ const server = createServer(async (request, response) => {
     // Runtime configuration for the static frontend (Docker-friendly: no
     // rebuild needed to point at a different Convex deployment).
     if (pathname === "/api/config" && request.method === "GET") {
-      const convexUrl = process.env.CONVEX_URL;
-      const convexSiteUrl = process.env.CONVEX_SITE_URL;
-      const googleClientId = process.env.AUTH_GOOGLE_ID;
-      sendJson(response, 200, {
-        auth:
-          convexUrl && convexSiteUrl && googleClientId
-            ? { convexUrl, convexSiteUrl, googleClientId }
-            : null,
-      });
+      sendJson(response, 200, { auth: authConfig });
       return;
     }
 
@@ -125,17 +131,27 @@ const server = createServer(async (request, response) => {
 
       if (pathname === "/api/admin/overview" && request.method === "GET") {
         const now = Date.now();
+        const requestedCycleDay = Number(url.searchParams.get("billingCycleDay") ?? 1);
+        const billingCycleDay =
+          Number.isInteger(requestedCycleDay) && requestedCycleDay >= 1 && requestedCycleDay <= 31
+            ? requestedCycleDay
+            : 1;
+        const billingPeriod = utcBillingPeriod(billingCycleDay, now);
+        const billingPeriodTotals = hub.ledger.bytesSince(billingPeriod.start);
         sendJson(response, 200, {
           now,
           startedAt: hub.startedAt,
+          billingCycleDay,
+          billingPeriodStart: billingPeriod.start,
+          billingPeriodEnd: billingPeriod.end,
           sessionsCreated: hub.sessionsCreated,
           wsClients: hub.wsClientCount(),
           totals: {
-            egressBytes: hub.ledger.totalEgressBytes,
-            ingressBytes: hub.ledger.totalIngressBytes,
-            egressBytesLastHour: hub.ledger.bytesInLast(60),
+            egressBytesBillingPeriod: billingPeriodTotals.egressBytes,
+            ingressBytesBillingPeriod: billingPeriodTotals.ingressBytes,
+            egressBytesLastDay: hub.ledger.bytesInLast(24 * 60),
           },
-          series: hub.ledger.series(60),
+          series: hub.ledger.series(24 * 60, 15),
           sessions: hub.activeRooms().map((room) => ({
             code: room.code,
             createdAt: room.createdAt,
@@ -147,8 +163,17 @@ const server = createServer(async (request, response) => {
           })),
           endedSessions: hub.endedSessions(),
           cloudflare: cloudflarePoller
-            ? cloudflarePoller.snapshot()
-            : { enabled: false, egressBytes24h: null, updatedAt: null, error: null },
+            ? cloudflarePoller.snapshot(billingPeriod.start, billingPeriod.end)
+            : {
+                enabled: false,
+                egressBytesBillingPeriod: null,
+                dailySeries: [],
+                billingPeriodStart: billingPeriod.start,
+                billingPeriodEnd: billingPeriod.end,
+                freeTierBytes: CLOUDFLARE_FREE_TIER_BYTES,
+                updatedAt: null,
+                error: null,
+              },
         });
         return;
       }
@@ -215,6 +240,6 @@ server.listen(PORT, HOST, () => {
   console.log(`showmeplease backend listening on http://${HOST}:${port}`);
   console.log(`  static frontend: ${statics.available() ? staticRoot : "not built (API only)"}`);
   console.log(`  realtime proxy:  ${process.env.REALTIME_APP_ID ? "configured" : "NOT CONFIGURED"}`);
-  console.log(`  convex auth:     ${process.env.CONVEX_URL ? "configured" : "not configured"}`);
+  console.log(`  convex auth:     ${authConfig ? "configured" : "not configured"}`);
   console.log(`  cloudflare usage poller: ${cloudflarePoller ? "enabled" : "disabled"}`);
 });

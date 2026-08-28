@@ -9,11 +9,54 @@
 // Secondary (optional) source: the Cloudflare GraphQL Analytics dataset
 // `callsUsageAdaptiveGroups`, polled when CLOUDFLARE_API_TOKEN and
 // CLOUDFLARE_ACCOUNT_ID are configured. Analytics lag by a few minutes but
-// reflect Cloudflare's own metering.
+// provide Cloudflare-side usage analytics closest to the billed traffic.
 
 export type MinuteBucket = { minute: number; egressBytes: number; ingressBytes: number };
 
-const SERIES_MINUTES = 180;
+export type CloudflareDailyBucket = { date: string; egressBytes: number };
+
+// Retain enough sparse minute buckets for both a 31-day billing period and a
+// rolling 24-hour view. Empty minutes are only materialized in API responses.
+const SERIES_MINUTES = 32 * 24 * 60;
+const DAY_MS = 24 * 60 * 60_000;
+const USAGE_LOOKBACK_DAYS = 31;
+
+function cloudflareErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Cloudflare analytics request failed";
+  return message.replace(/account "[a-f0-9]{32}"/gi, "Cloudflare account");
+}
+
+export const CLOUDFLARE_FREE_TIER_BYTES = 1_000_000_000_000;
+
+function daysInUtcMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+}
+
+function utcCycleDate(year: number, month: number, cycleDay: number): number {
+  return Date.UTC(year, month, Math.min(cycleDay, daysInUtcMonth(year, month)));
+}
+
+export function utcBillingPeriod(
+  cycleDay: number,
+  now = Date.now(),
+): { start: number; end: number } {
+  const safeCycleDay =
+    Number.isInteger(cycleDay) && cycleDay >= 1 && cycleDay <= 31 ? cycleDay : 1;
+  const date = new Date(now);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const thisMonthStart = utcCycleDate(year, month, safeCycleDay);
+  if (thisMonthStart <= now) {
+    return {
+      start: thisMonthStart,
+      end: utcCycleDate(year, month + 1, safeCycleDay),
+    };
+  }
+  return {
+    start: utcCycleDate(year, month - 1, safeCycleDay),
+    end: thisMonthStart,
+  };
+}
 
 export class EgressLedger {
   totalEgressBytes = 0;
@@ -41,12 +84,27 @@ export class EgressLedger {
     }
   }
 
-  /** Dense per-minute series for the last `minutes` minutes, oldest first. */
-  series(minutes = 60, now = Date.now()): MinuteBucket[] {
+  /** Dense series for the requested period, oldest first. */
+  series(minutes = 60, bucketMinutes = 1, now = Date.now()): MinuteBucket[] {
     const end = Math.floor(now / 60_000);
-    const byMinute = new Map(this.buckets.map((bucket) => [bucket.minute, bucket]));
+    const safeBucketMinutes = Math.max(1, Math.floor(bucketMinutes));
+    const endBucket = Math.floor(end / safeBucketMinutes) * safeBucketMinutes;
+    const bucketCount = Math.ceil(minutes / safeBucketMinutes);
+    const startBucket = endBucket - (bucketCount - 1) * safeBucketMinutes;
+    const byMinute = new Map<number, MinuteBucket>();
+    for (const bucket of this.buckets) {
+      const minute = Math.floor(bucket.minute / safeBucketMinutes) * safeBucketMinutes;
+      if (minute < startBucket || minute > endBucket) continue;
+      const aggregate = byMinute.get(minute);
+      if (aggregate) {
+        aggregate.egressBytes += bucket.egressBytes;
+        aggregate.ingressBytes += bucket.ingressBytes;
+      } else {
+        byMinute.set(minute, { ...bucket, minute });
+      }
+    }
     const result: MinuteBucket[] = [];
-    for (let minute = end - minutes + 1; minute <= end; minute += 1) {
+    for (let minute = startBucket; minute <= endBucket; minute += safeBucketMinutes) {
       result.push(byMinute.get(minute) ?? { minute, egressBytes: 0, ingressBytes: 0 });
     }
     return result;
@@ -58,12 +116,36 @@ export class EgressLedger {
       .filter((bucket) => bucket.minute > cutoff)
       .reduce((sum, bucket) => sum + bucket.egressBytes, 0);
   }
+
+  bytesSince(since: number): { egressBytes: number; ingressBytes: number } {
+    const firstMinute = Math.ceil(since / 60_000);
+    return this.buckets
+      .filter((bucket) => bucket.minute >= firstMinute)
+      .reduce(
+        (totals, bucket) => ({
+          egressBytes: totals.egressBytes + bucket.egressBytes,
+          ingressBytes: totals.ingressBytes + bucket.ingressBytes,
+        }),
+        { egressBytes: 0, ingressBytes: 0 },
+      );
+  }
 }
 
 export type CloudflareUsage = {
   enabled: boolean;
-  /** Egress bytes metered by Cloudflare in the last 24 hours. */
-  egressBytes24h: number | null;
+  /** Account-wide Realtime SFU + TURN egress for the selected billing period. */
+  egressBytesBillingPeriod: number | null;
+  dailySeries: CloudflareDailyBucket[];
+  billingPeriodStart: number;
+  billingPeriodEnd: number;
+  freeTierBytes: number;
+  updatedAt: number | null;
+  error: string | null;
+};
+
+type CloudflareUsageState = {
+  enabled: boolean;
+  dailySeries: CloudflareDailyBucket[];
   updatedAt: number | null;
   error: string | null;
 };
@@ -71,18 +153,33 @@ export type CloudflareUsage = {
 type CloudflarePollerOptions = {
   apiToken: string;
   accountId: string;
-  appId: string;
   intervalMs?: number;
 };
 
 const USAGE_QUERY = `
-  query SfuUsage($accountTag: string!, $appId: string!, $since: Time!) {
+  query RealtimeUsage($accountTag: string!, $since: Date!) {
     viewer {
       accounts(filter: { accountTag: $accountTag }) {
-        callsUsageAdaptiveGroups(
-          filter: { appId: $appId, datetimeMinute_gt: $since }
-          limit: 1000
+        sfu: callsUsageAdaptiveGroups(
+          filter: { date_geq: $since }
+          limit: 100
+          orderBy: [date_ASC]
         ) {
+          dimensions {
+            date
+          }
+          sum {
+            egressBytes
+          }
+        }
+        turn: callsTurnUsageAdaptiveGroups(
+          filter: { date_geq: $since }
+          limit: 100
+          orderBy: [date_ASC]
+        ) {
+          dimensions {
+            date
+          }
           sum {
             egressBytes
           }
@@ -95,9 +192,9 @@ const USAGE_QUERY = `
 export class CloudflareUsagePoller {
   private readonly options: CloudflarePollerOptions;
   private timer: NodeJS.Timeout | null = null;
-  private state: CloudflareUsage = {
+  private state: CloudflareUsageState = {
     enabled: true,
-    egressBytes24h: null,
+    dailySeries: [],
     updatedAt: null,
     error: null,
   };
@@ -118,13 +215,32 @@ export class CloudflareUsagePoller {
     this.timer = null;
   }
 
-  snapshot(): CloudflareUsage {
-    return { ...this.state };
+  snapshot(billingPeriodStart: number, billingPeriodEnd: number): CloudflareUsage {
+    const startDate = new Date(billingPeriodStart).toISOString().slice(0, 10);
+    const endDate = new Date(billingPeriodEnd).toISOString().slice(0, 10);
+    const dailySeries = this.state.dailySeries.filter(
+      (bucket) => bucket.date >= startDate && bucket.date < endDate,
+    );
+    return {
+      enabled: this.state.enabled,
+      egressBytesBillingPeriod:
+        this.state.updatedAt === null
+          ? null
+          : dailySeries.reduce((sum, bucket) => sum + bucket.egressBytes, 0),
+      dailySeries,
+      billingPeriodStart,
+      billingPeriodEnd,
+      freeTierBytes: CLOUDFLARE_FREE_TIER_BYTES,
+      updatedAt: this.state.updatedAt,
+      error: this.state.error,
+    };
   }
 
   private async poll() {
+    const now = Date.now();
     try {
-      const since = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+      const rangeStart = now - USAGE_LOOKBACK_DAYS * DAY_MS;
+      const since = new Date(rangeStart).toISOString().slice(0, 10);
       const response = await fetch("https://api.cloudflare.com/client/v4/graphql", {
         method: "POST",
         headers: {
@@ -135,7 +251,6 @@ export class CloudflareUsagePoller {
           query: USAGE_QUERY,
           variables: {
             accountTag: this.options.accountId,
-            appId: this.options.appId,
             since,
           },
         }),
@@ -144,22 +259,51 @@ export class CloudflareUsagePoller {
         data?: {
           viewer?: {
             accounts?: Array<{
-              callsUsageAdaptiveGroups?: Array<{ sum?: { egressBytes?: number } }>;
+              sfu?: Array<{
+                dimensions?: { date?: string };
+                sum?: { egressBytes?: number };
+              }>;
+              turn?: Array<{
+                dimensions?: { date?: string };
+                sum?: { egressBytes?: number };
+              }>;
             }>;
           };
         };
         errors?: Array<{ message?: string }>;
       };
+      if (!response.ok) {
+        throw new Error(`Cloudflare analytics request failed (${response.status})`);
+      }
       if (payload.errors?.length) {
         throw new Error(payload.errors.map((error) => error.message).join("; "));
       }
-      const groups = payload.data?.viewer?.accounts?.[0]?.callsUsageAdaptiveGroups ?? [];
-      const total = groups.reduce((sum, group) => sum + (group.sum?.egressBytes ?? 0), 0);
-      this.state = { enabled: true, egressBytes24h: total, updatedAt: Date.now(), error: null };
+      const account = payload.data?.viewer?.accounts?.[0];
+      const groups = [...(account?.sfu ?? []), ...(account?.turn ?? [])];
+      const byDate = new Map<string, number>();
+      for (const group of groups) {
+        const date = group.dimensions?.date;
+        const egressBytes = group.sum?.egressBytes;
+        if (!date || typeof egressBytes !== "number" || !Number.isFinite(egressBytes)) continue;
+        byDate.set(date, (byDate.get(date) ?? 0) + Math.max(0, egressBytes));
+      }
+
+      const dailySeries: CloudflareDailyBucket[] = [];
+      const firstDay = Date.parse(`${since}T00:00:00Z`);
+      for (let day = firstDay; day <= now; day += DAY_MS) {
+        const date = new Date(day).toISOString().slice(0, 10);
+        dailySeries.push({ date, egressBytes: byDate.get(date) ?? 0 });
+      }
+      this.state = {
+        enabled: true,
+        dailySeries,
+        updatedAt: now,
+        error: null,
+      };
     } catch (error) {
       this.state = {
         ...this.state,
-        error: error instanceof Error ? error.message : "Cloudflare analytics request failed",
+        error: cloudflareErrorMessage(error),
       };
     }
   }

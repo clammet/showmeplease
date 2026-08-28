@@ -24,6 +24,11 @@ async function startBackend() {
       PORT: "0",
       HOST: "127.0.0.1",
       ADMIN_ALLOW_INSECURE: "1",
+      VITE_CONVEX_URL: "https://test-deployment.convex.cloud",
+      VITE_CONVEX_SITE_URL: "https://test-deployment.convex.site",
+      AUTH_GOOGLE_ID: "test-client.apps.googleusercontent.com",
+      CLOUDFLARE_API_TOKEN: "",
+      CLOUDFLARE_ACCOUNT_ID: "",
       STATIC_ROOT: "dist/client",
     },
     stdio: ["ignore", "pipe", "inherit"],
@@ -79,9 +84,13 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   assert.equal(idle.busy, false);
   assert.equal(idle.connectedClients, 0);
 
-  // Config endpoint reports auth disabled without Convex env.
+  // Convex's Vite-prefixed public URLs configure runtime auth.
   const config = await (await fetch(`${base}/api/config`)).json();
-  assert.equal(config.auth, null);
+  assert.deepEqual(config.auth, {
+    convexUrl: "https://test-deployment.convex.cloud",
+    convexSiteUrl: "https://test-deployment.convex.site",
+    googleClientId: "test-client.apps.googleusercontent.com",
+  });
 
   // Create a session.
   const created = await (
@@ -155,14 +164,24 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
 
   // Admin overview reflects the session and the reported egress.
-  const overview = await (await fetch(`${base}/api/admin/overview`)).json();
+  const overview = await (
+    await fetch(`${base}/api/admin/overview?billingCycleDay=12`)
+  ).json();
   assert.equal(overview.sessions.length, 1);
   assert.equal(overview.sessions[0].code, created.code);
   assert.equal(overview.sessions[0].viewerCount, 1);
   assert.equal(overview.sessions[0].egressBytes, 750000);
-  assert.equal(overview.totals.egressBytes, 750000);
-  assert.equal(overview.totals.ingressBytes, 2000);
-  assert.ok(overview.series.length > 0);
+  assert.equal(overview.billingCycleDay, 12);
+  assert.equal(new Date(overview.billingPeriodStart).getUTCDate(), 12);
+  assert.equal(new Date(overview.billingPeriodEnd).getUTCDate(), 12);
+  assert.ok(overview.billingPeriodStart <= overview.now);
+  assert.ok(overview.billingPeriodEnd > overview.now);
+  assert.equal(overview.totals.egressBytesBillingPeriod, 750000);
+  assert.equal(overview.totals.ingressBytesBillingPeriod, 2000);
+  assert.equal(overview.totals.egressBytesLastDay, 750000);
+  assert.equal(overview.series.length, 96);
+  assert.equal(overview.cloudflare.egressBytesBillingPeriod, null);
+  assert.equal(overview.cloudflare.freeTierBytes, 1_000_000_000_000);
 
   // Admin can terminate the session; clients get creator-end and the room is retired.
   const ended = nextMessage(viewer, "creator-end");

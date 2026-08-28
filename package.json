@@ -6,7 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "concurrently -k -n convex,server,web -c magenta,yellow,cyan \"CONVEX_AGENT_MODE=anonymous npx convex dev\" \"pnpm dev:server\" \"pnpm dev:web\"",
+    "dev": "node scripts/sync-convex-env.mjs && concurrently -k -n convex,server,web -c magenta,yellow,cyan \"CONVEX_AGENT_MODE=anonymous npx convex dev\" \"pnpm dev:server\" \"pnpm dev:web\"",
     "dev:web": "vinext dev -H 127.0.0.1",
     "dev:server": "PORT=${BACKEND_PORT:-8817} tsx watch server/index.ts",
     "devsetup": "node scripts/devsetup.mjs",

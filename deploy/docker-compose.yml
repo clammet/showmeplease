@@ -10,7 +10,7 @@
 #
 # Convex (auth) is external: either convex.dev cloud or a self-hosted
 # instance (https://github.com/get-convex/convex-backend/tree/main/self-hosted);
-# point CONVEX_URL / CONVEX_SITE_URL at it and deploy the functions with
+# point VITE_CONVEX_URL / VITE_CONVEX_SITE_URL at it and deploy the functions with
 # `npx convex deploy`.
 
 services:

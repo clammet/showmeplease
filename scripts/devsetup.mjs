@@ -62,8 +62,8 @@ run("npx", ["convex", "init"]);
 
 // 3. Local environment for the Node backend and Convex CLI.
 const added = ensureEnvValues([
-  ["CONVEX_URL", "http://127.0.0.1:3210", "Convex deployment (local instance from `npx convex dev`)"],
-  ["CONVEX_SITE_URL", "http://127.0.0.1:3211", "Convex HTTP actions (auth routes)"],
+  ["VITE_CONVEX_URL", "http://127.0.0.1:3210", "Convex deployment (local instance from `npx convex dev`)"],
+  ["VITE_CONVEX_SITE_URL", "http://127.0.0.1:3211", "Convex HTTP actions (auth routes)"],
   ["ADMIN_ALLOW_INSECURE", "1", "Local-only: open /admin without Google sign-in. Never set in production."],
   ["REALTIME_APP_ID", '""', "Cloudflare Realtime SFU app (media relay will 503 until set)"],
   ["REALTIME_APP_SECRET", '""'],
@@ -73,22 +73,9 @@ const added = ensureEnvValues([
 ]);
 if (added.length) console.log(`\nAdded to .env.local: ${added.join(", ")}`);
 
-// 4. Forward auth configuration into the Convex deployment's environment.
-//    convex/auth.config.ts needs *some* AUTH_GOOGLE_ID to evaluate, so a
-//    placeholder is used until a real OAuth client is configured.
-const env = readEnvFile();
-const forwards = [
-  ["SITE_URL", "http://127.0.0.1:3000"],
-  [
-    "AUTH_GOOGLE_ID",
-    envValue(env, "AUTH_GOOGLE_ID") || "placeholder.apps.googleusercontent.com",
-  ],
-  ["AUTH_GOOGLE_SECRET", envValue(env, "AUTH_GOOGLE_SECRET")],
-  ["ADMIN_EMAILS", envValue(env, "ADMIN_EMAILS")],
-].filter(([, value]) => value);
-for (const [key, value] of forwards) {
-  run("npx", ["convex", "env", "set", key, value]);
-}
+// 4. Forward auth configuration into the local Convex deployment without
+//    putting secret values in process arguments or terminal output.
+run(process.execPath, ["scripts/sync-convex-env.mjs"]);
 
 // 5. Push functions to the local deployment (starts the local backend for the
 //    duration of the push) and generate convex/_generated.
@@ -103,8 +90,8 @@ Done. Next steps:
 
 Optional, in .env.local:
   - REALTIME_APP_ID / REALTIME_APP_SECRET   -> enables the Cloudflare SFU media relay
-  - AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET     -> enables Google sign-in (re-run pnpm devsetup
-    afterwards so the values are forwarded to the Convex deployment)
+  - AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET     -> enables Google sign-in (pnpm dev
+    forwards changes into the local Convex deployment on every startup)
   - ADMIN_EMAILS                            -> admin allowlist (then remove ADMIN_ALLOW_INSECURE)
   - CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID -> Cloudflare-metered egress in /admin
 `);
