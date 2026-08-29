@@ -227,6 +227,12 @@ const server = createServer(async (request, response) => {
     await statics.serve(request, response, pathname);
   } catch (error) {
     if (error instanceof HttpError) {
+      if (error.status === 413) {
+        // The body was rejected mid-stream. Discard the rest and close the
+        // connection so the client does not reuse a half-read socket.
+        request.resume();
+        response.setHeader("connection", "close");
+      }
       if (!response.headersSent) sendJson(response, error.status, { error: error.message });
       else response.end();
       return;
