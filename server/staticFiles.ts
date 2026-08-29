@@ -23,8 +23,9 @@ const CONTENT_TYPES: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
 };
 
-// The static export bakes absolute metadata URLs against this placeholder;
-// we rewrite it to the public origin when serving HTML.
+// The static export bakes absolute metadata URLs against this placeholder.
+// Rewrite it when Node serves HTML directly; an external static server that
+// extracts /srv/www from the image must perform the equivalent substitution.
 const ORIGIN_PLACEHOLDER = "http://localhost:3000";
 const HOST_PATTERN = /^[a-z0-9.-]+(:\d{1,5})?$/i;
 

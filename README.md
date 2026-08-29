@@ -22,16 +22,23 @@ WebRTC, the Cloudflare Realtime SFU, Convex, and Lucide icons.
 
 ## Architecture
 
-One Docker container serves everything except media and auth:
+The published image contains the Node backend and a static frontend export:
 
 ```
-browser ── static frontend + /api ──► Node backend (this container)
-   │                                    ├─ session hub (codes, presence, chat, WebSockets)
-   │                                    ├─ Realtime proxy (holds the SFU app secret)
-   │                                    ├─ egress monitor + admin API
+browser ── static frontend + /api ──► deployment edge
+   │                                    ├─ static export (/srv/www in the image)
+   │                                    └─ Node backend (:8080)
+   │                                         ├─ session hub (codes, presence, chat, WebSockets)
+   │                                         ├─ Realtime proxy (holds the SFU app secret)
+   │                                         └─ egress monitor + admin API
    ├── WebRTC media ──► Cloudflare Realtime SFU   (the heavy lifting)
    └── auth + profiles ──► Convex deployment      (googly-auth component)
 ```
+
+The Node process serves both pieces in a standalone container deployment. An
+external primary nginx can instead copy `/srv/www` out of the image, serve the
+frontend directly, and proxy only `/api/*` and WebSocket traffic to Node. Both
+pieces always come from the same image revision.
 
 - The browser talks to the backend for session control; the Realtime secret
   never reaches clients. Media flows directly between browsers and the
@@ -88,8 +95,9 @@ pnpm image:publish  # multi-arch buildx push (IMAGE_NAME=… IMAGE_TAG=…)
 
 ## Docker deployment
 
-The image contains the static frontend and the Node backend in one container;
-Cloudflare Realtime does the media heavy lifting and Convex handles auth.
+The image contains the static frontend and the Node backend. By default Node
+serves both; Cloudflare Realtime does the media heavy lifting and Convex handles
+auth.
 
 ```sh
 pnpm image:build
@@ -121,6 +129,15 @@ exposes port `8080`, `/healthz` for readiness/liveness, and an unauthenticated
 defer restarts — e.g. image updates — until `busy` is false. All configuration
 is runtime environment (`.env.example` documents every variable) — the
 frontend fetches `/api/config` at boot, so one image works for any deployment.
+
+For an external static-serving deployment, the built frontend is available at
+`/srv/www` inside the image. Copy that directory out without starting the
+container, resolve clean routes to their generated `.html` files, return the
+exported `404.html` with a real 404 status for unknown routes, rewrite the
+build-time `http://localhost:3000` metadata origin to the public origin, and
+proxy `/api/*` (including WebSocket upgrades) plus `/healthz` to the Node
+container on port 8080. Preserve the security and cache headers emitted by
+`server/staticFiles.ts` when configuring that external server.
 
 Convex in production is either [convex.dev](https://convex.dev) cloud or a
 [self-hosted Convex](https://github.com/get-convex/convex-backend/tree/main/self-hosted)

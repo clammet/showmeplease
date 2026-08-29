@@ -20,14 +20,17 @@ FROM node:22.19.0-alpine@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b8
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV STATIC_ROOT=/srv/www
 
 WORKDIR /app
 
-# The single container serves the static frontend and runs the small backend
-# (session hub, Realtime SFU proxy, admin API). Media never touches it — the
-# heavy lifting is done by the Cloudflare Realtime SFU.
+# The backend can serve the frontend for standalone deployments. The frontend
+# also has a stable export path so an external primary nginx can copy it out of
+# this same image and serve it directly while proxying only /api to Node.
+# Media never touches this container — Cloudflare Realtime does that work.
 COPY --from=build /app/dist/backend /app/dist/backend
-COPY --from=build /app/dist/client /app/dist/client
+COPY --from=build /app/dist/client /srv/www
+RUN test -f /srv/www/index.html && test -f /srv/www/404.html
 
 USER node
 

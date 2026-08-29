@@ -62,5 +62,14 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          load: true
+          tags: showmeplease:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # /srv/www is a deployment contract: external nginx installations copy
+      # this static export out of the same image that runs the Node backend.
+      - name: Verify static export contract
+        run: >-
+          docker run --rm --entrypoint sh showmeplease:test -ec
+          'test -f /srv/www/index.html && test -f /srv/www/404.html'
