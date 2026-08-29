@@ -65,19 +65,8 @@ type FetchState =
   | { phase: "error"; message: string }
   | { phase: "ready"; overview: Overview };
 
+/** Decimal units (1 GB = 10^9 B), the same scale Cloudflare bills in. */
 function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-}
-
-function formatMeteredBytes(bytes: number): string {
   if (bytes < 1000) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let value = bytes / 1000;
@@ -88,6 +77,8 @@ function formatMeteredBytes(bytes: number): string {
   }
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
+
+const formatMeteredBytes = formatBytes;
 
 function formatPercentage(ratio: number): string {
   const percentage = ratio * 100;
@@ -120,10 +111,6 @@ function dayLabel(date: string): string {
     day: "numeric",
     timeZone: "UTC",
   });
-}
-
-function dateInputValue(timestamp: number): string {
-  return new Date(timestamp).toISOString().slice(0, 10);
 }
 
 function billingPeriodLabel(start: number, end: number): string {
@@ -249,12 +236,10 @@ function EgressChart({ series }: { series: MinuteBucket[] }) {
 function CloudflareChart({
   usage,
   billingCycleDay,
-  now,
   onBillingCycleDayChange,
 }: {
   usage: Overview["cloudflare"];
   billingCycleDay: number;
-  now: number;
   onBillingCycleDayChange: (day: number) => void;
 }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -285,22 +270,24 @@ function CloudflareChart({
       </div>
 
       <div className="admin-billing-control">
-        <label htmlFor="billing-period-start">Current period started</label>
+        <label htmlFor="billing-cycle-day">Billing cycle starts on day</label>
         <input
-          key={usage.billingPeriodStart}
-          id="billing-period-start"
-          type="date"
-          defaultValue={dateInputValue(usage.billingPeriodStart)}
-          max={dateInputValue(now)}
-          onInput={(event) => {
-            const day = Number(event.currentTarget.value.slice(8, 10));
+          id="billing-cycle-day"
+          type="number"
+          min={1}
+          max={31}
+          value={billingCycleDay}
+          onChange={(event) => {
+            const day = Number(event.currentTarget.value);
             if (Number.isInteger(day) && day >= 1 && day <= 31) {
               onBillingCycleDayChange(day);
             }
           }}
         />
         <span>
-          Repeats monthly on day {billingCycleDay}. Saved in this browser.
+          Current period {billingPeriodLabel(usage.billingPeriodStart, usage.billingPeriodEnd)}
+          {usage.updatedAt !== null && `, Cloudflare data as of ${new Date(usage.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+          . Saved in this browser.
         </span>
         {billingCycleDay !== 1 && (
           <button type="button" onClick={() => onBillingCycleDayChange(1)}>
@@ -464,10 +451,18 @@ function Dashboard({
 
   const terminate = async (code: string) => {
     if (!window.confirm(`End session ${code} for everyone?`)) return;
-    await fetch(`/api/admin/sessions/${code}`, {
-      method: "DELETE",
-      headers: token ? { authorization: `Bearer ${token}` } : undefined,
-    });
+    try {
+      const response = await fetch(`/api/admin/sessions/${code}`, {
+        method: "DELETE",
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        window.alert(`Could not end ${code}: ${payload.error ?? response.status}`);
+      }
+    } catch {
+      window.alert(`Could not end ${code}: backend unreachable`);
+    }
     void load();
   };
 
@@ -536,7 +531,6 @@ function Dashboard({
       <CloudflareChart
         usage={overview.cloudflare}
         billingCycleDay={overview.billingCycleDay}
-        now={overview.now}
         onBillingCycleDayChange={updateBillingCycleDay}
       />
 
@@ -624,10 +618,16 @@ function Dashboard({
 }
 
 function AuthedDashboard({ client }: { client: GooglyAuthClient }) {
-  const { isLoading, isAuthenticated, token, signIn } = client.useGoogleAuth();
+  const { isLoading, isAuthenticated, token, signIn, signOut } = client.useGoogleAuth();
   const signInStarted = useRef(false);
+  const [rejected, setRejected] = useState(false);
   const startSignIn = useCallback(() => {
-    if (signInStarted.current) return;
+    if (signInStarted.current) {
+      // Already redirected once this page load and still 401: the token the
+      // backend sees is not acceptable, so stop looping and say so.
+      setRejected(true);
+      return;
+    }
     signInStarted.current = true;
     signIn("/admin");
   }, [signIn]);
@@ -649,6 +649,16 @@ function AuthedDashboard({ client }: { client: GooglyAuthClient }) {
       <div className="admin-empty">
         <LoaderCircle className="spin" size={22} />
         <p>Redirecting to sign-in…</p>
+      </div>
+    );
+  }
+  if (rejected) {
+    return (
+      <div className="admin-empty" role="alert">
+        <CircleAlert size={22} />
+        <p>The backend rejected this sign-in.</p>
+        <small>Check AUTH_GOOGLE_ID matches the Convex deployment, then sign in again.</small>
+        <button type="button" onClick={() => signOut()}>Sign out</button>
       </div>
     );
   }

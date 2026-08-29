@@ -1,25 +1,11 @@
-export type CodecPreference = "auto" | "AV1" | "VP9" | "VP8" | "H264";
+import type { CodecPreference, SessionOptions, SharedTrack } from "./options";
 
-export type SessionOptions = {
-  codec: CodecPreference;
-  maxBitrateKbps: number;
-  frameRate: 15 | 30 | 60;
-  includeSystemAudio: boolean;
-  allowViewerMic: boolean;
-};
-
-export type SharedTrack = {
-  sessionId: string;
-  trackName: string;
-  kind: "audio" | "video";
-  source: "screen" | "presenter-mic" | "viewer-mic";
-  ownerId?: string;
-};
+export type { CodecPreference, SessionOptions, SharedTrack } from "./options";
 
 type TrackApiResponse = {
   requiresImmediateRenegotiation?: boolean;
   sessionDescription?: RTCSessionDescriptionInit;
-  tracks?: Array<{ trackName: string; mid?: string }>;
+  tracks?: Array<{ trackName: string; mid?: string; errorCode?: string; errorDescription?: string }>;
 };
 
 type RealtimeConnectionOptions = {
@@ -30,6 +16,15 @@ type RealtimeConnectionOptions = {
   onConnectionState?: (state: RTCPeerConnectionState) => void;
 };
 
+export class RealtimeError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 const REALTIME_HEADERS = (code: string, token: string) => ({
   "content-type": "application/json",
   "x-session-code": code,
@@ -38,7 +33,7 @@ const REALTIME_HEADERS = (code: string, token: string) => ({
 
 async function apiRequest<T>(
   path: string,
-  method: "POST" | "PUT",
+  method: "GET" | "POST" | "PUT",
   code: string,
   token: string,
   body?: unknown,
@@ -52,10 +47,14 @@ async function apiRequest<T>(
   const payload = (await response.json().catch(() => ({}))) as T & {
     error?: string;
     detail?: string;
+    errorDescription?: string;
   };
 
   if (!response.ok) {
-    throw new Error(payload.detail || payload.error || "Realtime request failed");
+    throw new RealtimeError(
+      payload.detail || payload.error || payload.errorDescription || "Realtime request failed",
+      response.status,
+    );
   }
 
   return payload;
@@ -76,10 +75,15 @@ function setCodecPreference(
   transceiver.setCodecPreferences([...preferred, ...rest]);
 }
 
+/**
+ * One Cloudflare Realtime session over one RTCPeerConnection. All signalling
+ * goes through the backend proxy, which checks the share token.
+ */
 export class RealtimeConnection {
   private peer: RTCPeerConnection | null = null;
   private sessionId: string | null = null;
-  private remoteStream = new MediaStream();
+  /** A single stream for the life of the connection; tracks come and go on it. */
+  readonly remoteStream = new MediaStream();
   private operation: Promise<unknown> = Promise.resolve();
   private readonly code: string;
   private readonly token: string;
@@ -106,15 +110,23 @@ export class RealtimeConnection {
       return { peer: this.peer, sessionId: this.sessionId };
     }
 
-    const created = await apiRequest<{ sessionId: string }>(
-      "/api/realtime/sessions/new",
-      "POST",
-      this.code,
-      this.token,
-    );
+    const [ice, created] = await Promise.all([
+      apiRequest<{ iceServers: RTCIceServer[] }>(
+        "/api/realtime/ice",
+        "GET",
+        this.code,
+        this.token,
+      ).catch(() => ({ iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }] })),
+      apiRequest<{ sessionId: string }>(
+        "/api/realtime/sessions/new",
+        "POST",
+        this.code,
+        this.token,
+      ),
+    ]);
 
     const peer = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      iceServers: ice.iceServers,
       bundlePolicy: "max-bundle",
     });
 
@@ -208,6 +220,11 @@ export class RealtimeConnection {
         },
       );
 
+      const failed = response.tracks?.find((track) => track.errorCode);
+      if (failed) {
+        throw new RealtimeError(failed.errorDescription || "Track is no longer available", 410);
+      }
+
       if (response.requiresImmediateRenegotiation) {
         if (!response.sessionDescription) {
           throw new Error("Cloudflare did not return a session offer");
@@ -239,7 +256,9 @@ export class RealtimeConnection {
       this.peer.getSenders().map(async (sender) => {
         if (sender.track?.kind !== "video") return;
         const parameters = sender.getParameters();
-        if (!parameters.encodings?.length) parameters.encodings = [{}];
+        // The encodings array must keep the length the sender was created
+        // with; a sender without encodings cannot be limited yet.
+        if (!parameters.encodings?.length) return;
         parameters.encodings[0].maxBitrate = maxBitrateKbps * 1000;
         await sender.setParameters(parameters);
       }),
@@ -269,7 +288,9 @@ export class RealtimeConnection {
     this.peer?.close();
     this.peer = null;
     this.sessionId = null;
-    this.remoteStream.getTracks().forEach((track) => track.stop());
-    this.remoteStream = new MediaStream();
+    for (const track of this.remoteStream.getTracks()) {
+      track.stop();
+      this.remoteStream.removeTrack(track);
+    }
   }
 }

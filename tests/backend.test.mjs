@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 import WebSocket from "ws";
 
@@ -16,20 +17,24 @@ const DEFAULT_OPTIONS = {
   allowViewerMic: false,
 };
 
-async function startBackend() {
+async function startBackend(overrides = {}) {
   const child = spawn(process.execPath, ["dist/backend/index.mjs"], {
     cwd: new URL(".", root),
     env: {
       ...process.env,
       PORT: "0",
       HOST: "127.0.0.1",
+      NODE_ENV: "test",
       ADMIN_ALLOW_INSECURE: "1",
       VITE_CONVEX_URL: "https://test-deployment.convex.cloud",
       VITE_CONVEX_SITE_URL: "https://test-deployment.convex.site",
       AUTH_GOOGLE_ID: "test-client.apps.googleusercontent.com",
       CLOUDFLARE_API_TOKEN: "",
       CLOUDFLARE_ACCOUNT_ID: "",
+      PUBLIC_ORIGIN: "",
+      TRUST_PROXY: "",
       STATIC_ROOT: "dist/client",
+      ...overrides,
     },
     stdio: ["ignore", "pipe", "inherit"],
   });
@@ -47,6 +52,12 @@ async function startBackend() {
     child.on("exit", (code) => reject(new Error(`backend exited early (${code})`)));
   });
   return { child, base: `http://127.0.0.1:${port}` };
+}
+
+function connectSocket(wsBase, code, role, token, clientId) {
+  const socket = new WebSocket(`${wsBase}/api/sessions/${code}/ws`);
+  socket.on("open", () => socket.send(JSON.stringify({ type: "auth", role, token, clientId })));
+  return socket;
 }
 
 function nextMessage(socket, type) {
@@ -97,11 +108,28 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
     await fetch(`${base}/api/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ options: DEFAULT_OPTIONS }),
+      body: JSON.stringify({ options: DEFAULT_OPTIONS, clientId: "creator-1" }),
     })
   ).json();
   assert.match(created.code, /^[A-Z0-9]{6}$/);
   assert.ok(created.token);
+
+  // Options are validated strictly, bodies are size-limited, unknown paths 404.
+  const badOptions = await fetch(`${base}/api/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ options: { ...DEFAULT_OPTIONS, frameRate: 999 }, clientId: "x" }),
+  });
+  assert.equal(badOptions.status, 400);
+  const huge = await fetch(`${base}/api/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ options: DEFAULT_OPTIONS, clientId: "x", pad: "x".repeat(1_100_000) }),
+  });
+  assert.equal(huge.status, 413);
+  const missing = await fetch(`${base}/nope`);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("x-frame-options"), "DENY");
 
   // Joining before the creator is online is refused.
   const early = await fetch(`${base}/api/sessions/${created.code}/join`, {
@@ -111,13 +139,10 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   });
   assert.equal(early.status, 404);
 
-  // Creator connects over WebSocket.
+  // Creator connects over WebSocket and authenticates with the first frame.
   const wsBase = base.replace("http", "ws");
-  const creator = new WebSocket(
-    `${wsBase}/api/sessions/${created.code}/ws?role=creator&token=${created.token}&clientId=creator-1`,
-  );
+  const creator = connectSocket(wsBase, created.code, "creator", created.token, "creator-1");
   const creatorWelcome = nextMessage(creator, "welcome");
-  await once(creator, "open");
   assert.deepEqual((await creatorWelcome).options, DEFAULT_OPTIONS);
 
   // Status probe reports the live session (counts only, never codes).
@@ -127,12 +152,13 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   assert.equal(busy.activeSessions, 1);
   assert.doesNotMatch(JSON.stringify(busy), new RegExp(created.code));
 
-  // A bad token is rejected.
-  const intruder = new WebSocket(
-    `${wsBase}/api/sessions/${created.code}/ws?role=creator&token=wrong&clientId=x`,
-  );
+  // A bad token, or the right token with the wrong client id, is rejected.
+  const intruder = connectSocket(wsBase, created.code, "creator", "wrong", "x");
   const [closeCode] = await once(intruder, "close");
   assert.equal(closeCode, 4001);
+  const impostor = connectSocket(wsBase, created.code, "creator", created.token, "not-creator");
+  const [impostorCode] = await once(impostor, "close");
+  assert.equal(impostorCode, 4001);
 
   // Viewer joins and connects; creator is notified.
   const joined = await (
@@ -145,12 +171,8 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   assert.ok(joined.token);
 
   const waiting = nextMessage(creator, "viewer-waiting");
-  const viewer = new WebSocket(
-    `${wsBase}/api/sessions/${created.code}/ws?role=viewer&token=${joined.token}&clientId=viewer-1`,
-  );
-  const viewerWelcome = nextMessage(viewer, "welcome");
-  await once(viewer, "open");
-  await viewerWelcome;
+  const viewer = connectSocket(wsBase, created.code, "viewer", joined.token, "viewer-1");
+  await nextMessage(viewer, "welcome");
   assert.equal((await waiting).viewerCount, 1);
 
   // Chat reaches both sides and viewer byte reports feed the egress ledger.
@@ -183,13 +205,16 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   assert.equal(overview.cloudflare.egressBytesBillingPeriod, null);
   assert.equal(overview.cloudflare.freeTierBytes, 1_000_000_000_000);
 
-  // Admin can terminate the session; clients get creator-end and the room is retired.
+  // Admin can terminate the session; clients get creator-end, a terminal
+  // close code, and the room is retired.
   const ended = nextMessage(viewer, "creator-end");
+  const viewerClosed = once(viewer, "close");
   const kill = await fetch(`${base}/api/admin/sessions/${created.code}`, {
     method: "DELETE",
   });
   assert.equal(kill.status, 200);
-  await ended;
+  assert.equal((await ended).reason, "terminated");
+  assert.equal((await viewerClosed)[0], 4004);
 
   const after = await (await fetch(`${base}/api/admin/overview`)).json();
   assert.equal(after.sessions.length, 0);
@@ -201,37 +226,51 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
 });
 
 test("admin API requires auth when not in insecure dev mode", async (t) => {
-  const child = spawn(process.execPath, ["dist/backend/index.mjs"], {
-    cwd: new URL(".", root),
-    env: {
-      ...process.env,
-      PORT: "0",
-      HOST: "127.0.0.1",
-      ADMIN_ALLOW_INSECURE: "",
-      AUTH_GOOGLE_ID: "test-client.apps.googleusercontent.com",
-      ADMIN_EMAILS: "admin@example.com",
-      STATIC_ROOT: "dist/client",
-    },
-    stdio: ["ignore", "pipe", "inherit"],
+  const { child, base } = await startBackend({
+    ADMIN_ALLOW_INSECURE: "",
+    ADMIN_EMAILS: "admin@example.com",
   });
   t.after(() => child.kill());
-  const port = await new Promise((resolvePort, reject) => {
-    let buffer = "";
-    const timer = setTimeout(() => reject(new Error("backend did not start")), 15000);
-    child.stdout.on("data", (chunk) => {
-      buffer += String(chunk);
-      const match = buffer.match(/listening on http:\/\/[^:]+:(\d+)/);
-      if (match) {
-        clearTimeout(timer);
-        resolvePort(Number(match[1]));
-      }
-    });
-  });
 
-  const noToken = await fetch(`http://127.0.0.1:${port}/api/admin/overview`);
+  const noToken = await fetch(`${base}/api/admin/overview`);
   assert.equal(noToken.status, 401);
-  const badToken = await fetch(`http://127.0.0.1:${port}/api/admin/overview`, {
+  const badToken = await fetch(`${base}/api/admin/overview`, {
     headers: { authorization: "Bearer not-a-jwt" },
   });
   assert.equal(badToken.status, 401);
+});
+
+test("ADMIN_ALLOW_INSECURE is ignored in production", async (t) => {
+  const { child, base } = await startBackend({
+    NODE_ENV: "production",
+    ADMIN_ALLOW_INSECURE: "1",
+    ADMIN_EMAILS: "admin@example.com",
+  });
+  t.after(() => child.kill());
+  assert.equal((await fetch(`${base}/api/admin/overview`)).status, 401);
+});
+
+test("host header is not reflected into HTML unless it looks like a host", async (t) => {
+  const { child, base } = await startBackend();
+  t.after(() => child.kill());
+  // fetch() refuses a malformed Host header, so send it with node:http.
+  const html = await new Promise((resolve, reject) => {
+    const { port } = new URL(base);
+    const request = httpRequest(
+      { host: "127.0.0.1", port, path: "/", headers: { host: 'x"><script>alert(1)</script>' } },
+      (response) => {
+        let body = "";
+        response.on("data", (chunk) => (body += chunk));
+        response.on("end", () => resolve(body));
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
+  assert.doesNotMatch(html, /<script>alert/);
+  assert.match(html, /http:\/\/localhost:3000/, "placeholder left alone when host is invalid");
+  const forwarded = await fetch(`${base}/`, {
+    headers: { "x-forwarded-host": "evil.example", host: "127.0.0.1:1" },
+  });
+  assert.doesNotMatch(await forwarded.text(), /evil\.example/, "forwarded host ignored without TRUST_PROXY");
 });
