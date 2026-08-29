@@ -13,6 +13,7 @@ import {
   Mic,
   MicOff,
   MonitorUp,
+  ScreenShare,
   Settings,
   SlidersHorizontal,
   Users,
@@ -491,22 +492,49 @@ export default function ShareApp() {
     clientRef.current?.updateOptions(nextOptions);
   };
 
+  const requestCapture = () => {
+    if (!window.isSecureContext) {
+      throw new Error("Screen sharing needs HTTPS (or localhost). Open this page over https.");
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("Screen sharing is not supported in this browser");
+    }
+    return navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: options.frameRate, max: options.frameRate } },
+      audio: options.includeSystemAudio,
+    });
+  };
+
+  const changeSource = async () => {
+    const client = clientRef.current;
+    if (!client || client.role !== "creator" || busy) return;
+    setBusy(true);
+    setError("");
+    let capture: MediaStream | null = null;
+    try {
+      capture = await requestCapture();
+      await client.replaceCapture(capture);
+      setLocalStream(capture);
+    } catch (changeError) {
+      capture?.getTracks().forEach((track) => track.stop());
+      // The user cancelling the picker is not an error worth surfacing.
+      if (!(changeError instanceof DOMException && changeError.name === "NotAllowedError")) {
+        setError(
+          changeError instanceof Error ? changeError.message : "Could not change the capture source",
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createShare = async () => {
     if (!clientId || busy) return;
     setBusy(true);
     setError("");
     let capture: MediaStream | null = null;
     try {
-      if (!window.isSecureContext) {
-        throw new Error("Screen sharing needs HTTPS (or localhost). Open this page over https.");
-      }
-      if (!navigator.mediaDevices?.getDisplayMedia) {
-        throw new Error("Screen sharing is not supported in this browser");
-      }
-      capture = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: options.frameRate, max: options.frameRate } },
-        audio: options.includeSystemAudio,
-      });
+      capture = await requestCapture();
       const response = await fetch("/api/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -808,6 +836,17 @@ export default function ShareApp() {
         >
           {micMuted ? <MicOff size={18} /> : <Mic size={18} />}
         </button>
+        {role === "creator" && (
+          <button
+            className="dock-button"
+            onClick={changeSource}
+            disabled={busy}
+            title="Change capture source"
+            aria-label="Change capture source"
+          >
+            <ScreenShare size={18} />
+          </button>
+        )}
         {role === "creator" && (
           <button
             className="dock-button"

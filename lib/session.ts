@@ -77,7 +77,7 @@ export class SessionClient {
   private readonly token: string;
   readonly clientId: string;
   private options: SessionOptions;
-  private readonly localStream: MediaStream | null;
+  private localStream: MediaStream | null;
   private readonly emit: (event: SessionEvent) => void;
 
   private active = false;
@@ -117,17 +117,57 @@ export class SessionClient {
     this.active = true;
     this.openSocket();
     this.statsTimer = setInterval(() => void this.reportStats(), STATS_INTERVAL_MS);
-    if (this.role === "creator") {
-      this.localStream?.getVideoTracks()[0]?.addEventListener(
-        "ended",
-        () => {
-          if (!this.active) return;
-          this.stop(true);
-          this.emit({ type: "ended", reason: "presenter" });
-        },
-        { once: true },
-      );
+    if (this.role === "creator" && this.localStream) this.watchCaptureEnd(this.localStream);
+  }
+
+  /**
+   * End the share when the browser's own "Stop sharing" control fires,
+   * unless the capture has since been swapped for a new one.
+   */
+  private watchCaptureEnd(capture: MediaStream) {
+    capture.getVideoTracks()[0]?.addEventListener(
+      "ended",
+      () => {
+        if (!this.active || this.localStream !== capture) return;
+        this.stop(true);
+        this.emit({ type: "ended", reason: "presenter" });
+      },
+      { once: true },
+    );
+  }
+
+  /**
+   * Creator: swap the screen capture mid-share. Published senders keep their
+   * track names, so viewers see the new source without renegotiating. Throws
+   * if the swap fails; the caller still owns `capture` in that case.
+   */
+  async replaceCapture(capture: MediaStream): Promise<void> {
+    if (this.role !== "creator" || !this.active) throw new Error("Not presenting");
+    const current = this.localStream;
+    if (!current) throw new Error("No capture to replace");
+    const newVideo = capture.getVideoTracks()[0];
+    const newAudio = capture.getAudioTracks()[0] ?? null;
+    const oldVideo = current.getVideoTracks()[0];
+    const oldAudio = current.getAudioTracks()[0];
+
+    if (this.connection && this.publishedTracks.length) {
+      if (oldVideo && newVideo) await this.connection.replaceTrack(oldVideo, newVideo);
+      if (oldAudio) {
+        // Existing audio sender: swap it, or send silence when the new
+        // source has no system audio.
+        await this.connection.replaceTrack(oldAudio, newAudio);
+      } else if (newAudio) {
+        const [published] = await this.connection.publishTracks([
+          { track: newAudio, source: "screen" },
+        ]);
+        this.publishedTracks.push(published);
+        this.send({ type: "tracks-added", tracks: [published] });
+      }
     }
+
+    this.localStream = capture;
+    this.watchCaptureEnd(capture);
+    current.getTracks().forEach((track) => track.stop());
   }
 
   /** Tear everything down. `notify` tells the hub the presenter ended the share. */

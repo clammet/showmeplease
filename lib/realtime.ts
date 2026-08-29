@@ -245,6 +245,21 @@ export class RealtimeConnection {
     });
   }
 
+  /**
+   * Swap the media behind an already-published sender without renegotiating.
+   * Viewers keep pulling the same track name. Returns false when no sender
+   * currently carries `current`.
+   */
+  async replaceTrack(current: MediaStreamTrack, next: MediaStreamTrack | null): Promise<boolean> {
+    return this.enqueue(async () => {
+      const sender = this.peer?.getSenders().find((item) => item.track === current);
+      if (!sender) return false;
+      await sender.replaceTrack(next);
+      if (next?.kind === "video") await this.applyBitrate(this.preferences.maxBitrateKbps);
+      return true;
+    });
+  }
+
   async updatePreferences(preferences: SessionOptions) {
     this.preferences = preferences;
     await this.applyBitrate(preferences.maxBitrateKbps);
