@@ -1,9 +1,9 @@
 import type { IncomingMessage } from "node:http";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, errors as joseErrors, jwtVerify } from "jose";
 
 // Admin requests carry the Google ID token minted through convex-googly-auth
 // as a Bearer token. We verify it against Google's JWKS directly, so the
-// backend needs no session state of its own — just the OAuth client id
+// backend needs no session state of its own, only the OAuth client id
 // (audience) and an allowlist of admin email addresses.
 
 const GOOGLE_JWKS = createRemoteJWKSet(
@@ -21,9 +21,13 @@ function adminEmails(): string[] {
     .filter(Boolean);
 }
 
+/** The local escape hatch is ignored in production builds. */
+export function insecureAdminEnabled(): boolean {
+  return process.env.ADMIN_ALLOW_INSECURE === "1" && process.env.NODE_ENV !== "production";
+}
+
 export async function checkAdmin(request: IncomingMessage): Promise<AdminCheck> {
-  // Local development escape hatch; never set in production.
-  if (process.env.ADMIN_ALLOW_INSECURE === "1") {
+  if (insecureAdminEnabled()) {
     return { ok: true, email: "dev@localhost" };
   }
 
@@ -54,7 +58,13 @@ export async function checkAdmin(request: IncomingMessage): Promise<AdminCheck> 
       return { ok: false, status: 403, error: "This account is not an admin" };
     }
     return { ok: true, email };
-  } catch {
-    return { ok: false, status: 401, error: "Invalid or expired token" };
+  } catch (error) {
+    // A token that fails verification is the caller's problem; not being able
+    // to fetch Google's keys is ours.
+    if (error instanceof joseErrors.JOSEError && !(error instanceof joseErrors.JWKSTimeout)) {
+      return { ok: false, status: 401, error: "Invalid or expired token" };
+    }
+    console.error("Admin token verification unavailable:", error);
+    return { ok: false, status: 503, error: "Could not verify the token right now" };
   }
 }

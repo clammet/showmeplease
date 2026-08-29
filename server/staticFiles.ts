@@ -2,6 +2,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { SECURITY_HEADERS } from "./http";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -23,15 +24,27 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 // The static export bakes absolute metadata URLs against this placeholder;
-// we rewrite it to the requesting host when serving HTML (the nginx
-// sub_filter trick, moved into Node).
+// we rewrite it to the public origin when serving HTML.
 const ORIGIN_PLACEHOLDER = "http://localhost:3000";
+const HOST_PATTERN = /^[a-z0-9.-]+(:\d{1,5})?$/i;
 
-function requestOrigin(request: IncomingMessage): string {
-  const host =
-    (request.headers["x-forwarded-host"] as string | undefined) ?? request.headers.host;
-  const proto = (request.headers["x-forwarded-proto"] as string | undefined) ?? "http";
-  return host ? `${proto.split(",")[0].trim()}://${host.split(",")[0].trim()}` : "";
+/**
+ * Public origin for absolute URLs in HTML. PUBLIC_ORIGIN wins; otherwise the
+ * Host header (and, with TRUST_PROXY=1, the forwarded headers) is used after
+ * a strict character check so a client cannot inject markup.
+ */
+export function requestOrigin(request: IncomingMessage): string {
+  const configured = process.env.PUBLIC_ORIGIN?.replace(/\/+$/, "");
+  if (configured) return configured;
+  const trustProxy = process.env.TRUST_PROXY === "1";
+  const forwardedHost = trustProxy ? request.headers["x-forwarded-host"] : undefined;
+  const forwardedProto = trustProxy ? request.headers["x-forwarded-proto"] : undefined;
+  const host = ((forwardedHost as string | undefined) ?? request.headers.host ?? "")
+    .split(",")[0]
+    .trim();
+  const proto = ((forwardedProto as string | undefined) ?? "http").split(",")[0].trim();
+  if (!HOST_PATTERN.test(host) || (proto !== "http" && proto !== "https")) return "";
+  return `${proto}://${host}`;
 }
 
 export class StaticServer {
@@ -46,7 +59,13 @@ export class StaticServer {
   }
 
   private resolveFile(pathname: string): string | null {
-    const clean = normalize(decodeURIComponent(pathname)).replace(/^([/\\])+/, "");
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
+      return null;
+    }
+    const clean = normalize(decoded).replace(/^([/\\])+/, "");
     const candidates = clean === "" || clean === "."
       ? ["index.html"]
       : [clean, `${clean}.html`, join(clean, "index.html")];
@@ -59,11 +78,18 @@ export class StaticServer {
   }
 
   async serve(request: IncomingMessage, response: ServerResponse, pathname: string) {
-    const file = this.resolveFile(pathname) ?? this.resolveFile("index.html");
+    let file = this.resolveFile(pathname);
+    let status = 200;
     if (!file) {
-      response.writeHead(404, { "content-type": "text/plain" });
-      response.end("Not found");
-      return;
+      // Unknown paths get the exported 404 page with a real 404 status rather
+      // than the app shell with a 200.
+      file = this.resolveFile("404.html");
+      status = 404;
+      if (!file) {
+        response.writeHead(404, { ...SECURITY_HEADERS, "content-type": "text/plain" });
+        response.end("Not found");
+        return;
+      }
     }
 
     const type = CONTENT_TYPES[extname(file)] ?? "application/octet-stream";
@@ -73,12 +99,17 @@ export class StaticServer {
       const origin = requestOrigin(request);
       let html = await readFile(file, "utf8");
       if (origin) html = html.replaceAll(ORIGIN_PLACEHOLDER, origin);
-      response.writeHead(200, { "content-type": type, "cache-control": "no-cache" });
+      response.writeHead(status, {
+        ...SECURITY_HEADERS,
+        "content-type": type,
+        "cache-control": "no-cache",
+      });
       response.end(html);
       return;
     }
 
-    response.writeHead(200, {
+    response.writeHead(status, {
+      ...SECURITY_HEADERS,
       "content-type": type,
       "cache-control": immutable ? "public, max-age=31536000, immutable" : "public, max-age=300",
     });

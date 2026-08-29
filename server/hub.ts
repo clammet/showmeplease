@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
-import type { SessionOptions, SharedTrack } from "../lib/realtime";
+import {
+  parseSessionOptions,
+  parseSharedTrack,
+  type SessionOptions,
+  type SharedTrack,
+} from "../lib/options";
 import { EgressLedger } from "./egress";
+import { RateLimiter } from "./rateLimit";
 
-type Role = "creator" | "viewer";
+export type Role = "creator" | "viewer";
 
 export type ChatMessage = {
   type: "chat";
@@ -14,26 +20,39 @@ export type ChatMessage = {
   timestamp: number;
 };
 
-type SocketClient = {
-  id: string;
-  connectionId: string;
+/**
+ * One token holder. A participant is created by `createRoom` (creator) or
+ * `join` (viewer), is bound to the client id given at that time, and owns the
+ * Cloudflare Realtime sessions it opened through the proxy.
+ */
+export type Participant = {
+  token: string;
+  clientId: string;
   role: Role;
-  socket: WebSocket;
-  // Last cumulative RTCPeerConnection byte counters reported by this client.
-  lastInboundBytes: number;
-  lastOutboundBytes: number;
+  realtimeSessions: Set<string>;
+  /** Last time this participant had an open socket. */
+  lastSeen: number;
 };
+
+type SocketClient = {
+  participant: Participant;
+  socket: WebSocket;
+  alive: boolean;
+};
+
+type ByteCounters = { inbound: number; outbound: number };
 
 export type Room = {
   code: string;
-  creatorToken: string;
-  viewerTokens: Set<string>;
   options: SessionOptions;
   createdAt: number;
   lastActivity: number;
+  participants: Map<string, Participant>;
   clients: Map<WebSocket, SocketClient>;
   messages: ChatMessage[];
   sharedTracks: SharedTrack[];
+  /** Last cumulative RTCPeerConnection counters per client id, kept across socket reconnects. */
+  stats: Map<string, ByteCounters>;
   egressBytes: number;
   ingressBytes: number;
 };
@@ -47,11 +66,19 @@ export type EndedSession = {
 };
 
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const MAX_VIEWER_TOKENS = 512;
-const MAX_MESSAGES = 100;
+export const MAX_ROOMS = 1000;
+export const MAX_VIEWERS = 512;
+export const MAX_MESSAGES = 100;
+export const MAX_SHARED_TRACKS = 16;
+export const MAX_CHAT_LENGTH = 2000;
 const IDLE_ROOM_TTL_MS = 60 * 60_000;
+/** A viewer token outlives its socket this long so a reconnect can reuse it. */
+export const VIEWER_TOKEN_GRACE_MS = 5 * 60_000;
 const MAX_ENDED_SESSIONS = 50;
 const STATUS_RECENT_ACTIVITY_MS = 2 * 60_000;
+const SWEEP_INTERVAL_MS = 60_000;
+export const HEARTBEAT_INTERVAL_MS = 15_000;
+const CHAT_LIMIT = { max: 10, windowMs: 10_000 };
 
 function createCode() {
   const bytes = new Uint8Array(6);
@@ -65,33 +92,54 @@ export class SessionHub {
   sessionsCreated = 0;
   private rooms = new Map<string, Room>();
   private ended: EndedSession[] = [];
-  private sweeper: NodeJS.Timeout;
+  private readonly chatLimiter = new RateLimiter(CHAT_LIMIT.max, CHAT_LIMIT.windowMs);
+  private readonly timers: NodeJS.Timeout[] = [];
 
-  constructor() {
-    this.sweeper = setInterval(() => this.sweep(), 10 * 60_000);
-    this.sweeper.unref();
+  constructor(options: { timers?: boolean } = {}) {
+    if (options.timers !== false) {
+      const sweeper = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS);
+      const heartbeat = setInterval(() => this.heartbeat(), HEARTBEAT_INTERVAL_MS);
+      sweeper.unref();
+      heartbeat.unref();
+      this.timers.push(sweeper, heartbeat);
+    }
   }
 
-  createRoom(options: SessionOptions): { code: string; token: string } | null {
+  close() {
+    for (const timer of this.timers) clearInterval(timer);
+  }
+
+  createRoom(
+    options: SessionOptions,
+    clientId: string,
+    now = Date.now(),
+  ): { code: string; token: string } | null {
+    if (this.rooms.size >= MAX_ROOMS) return null;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const code = createCode();
       if (this.rooms.has(code)) continue;
-      const creatorToken = randomUUID();
+      const creator: Participant = {
+        token: randomUUID(),
+        clientId,
+        role: "creator",
+        realtimeSessions: new Set(),
+        lastSeen: now,
+      };
       this.rooms.set(code, {
         code,
-        creatorToken,
-        viewerTokens: new Set(),
         options,
-        createdAt: Date.now(),
-        lastActivity: Date.now(),
+        createdAt: now,
+        lastActivity: now,
+        participants: new Map([[creator.token, creator]]),
         clients: new Map(),
         messages: [],
         sharedTracks: [],
+        stats: new Map(),
         egressBytes: 0,
         ingressBytes: 0,
       });
       this.sessionsCreated += 1;
-      return { code, token: creatorToken };
+      return { code, token: creator.token };
     }
     return null;
   }
@@ -100,35 +148,106 @@ export class SessionHub {
     return this.rooms.get(code.toUpperCase());
   }
 
-  join(code: string): { token: string; options: SessionOptions } | null {
+  /**
+   * Mint a viewer token bound to `clientId`. Returns "full" when the room has
+   * MAX_VIEWERS tokens that are all backed by live or recently live sockets;
+   * tokens are never taken away from someone who is still connected.
+   */
+  join(
+    code: string,
+    clientId: string,
+    now = Date.now(),
+  ): { token: string; options: SessionOptions } | "full" | null {
     const room = this.room(code);
     if (!room || !this.creatorOnline(room)) return null;
-    const token = randomUUID();
-    room.viewerTokens.add(token);
-    if (room.viewerTokens.size > MAX_VIEWER_TOKENS) {
-      const excess = room.viewerTokens.size - MAX_VIEWER_TOKENS;
-      for (const stale of Array.from(room.viewerTokens).slice(0, excess)) {
-        room.viewerTokens.delete(stale);
+    // A client that joins again (page reload before the old socket closed)
+    // reuses its existing token instead of minting a second one.
+    for (const participant of room.participants.values()) {
+      if (participant.role === "viewer" && participant.clientId === clientId) {
+        participant.lastSeen = now;
+        return { token: participant.token, options: room.options };
       }
     }
-    room.lastActivity = Date.now();
-    return { token, options: room.options };
+    if (this.viewerTokenCount(room) >= MAX_VIEWERS) {
+      this.pruneViewers(room, now);
+      if (this.viewerTokenCount(room) >= MAX_VIEWERS) return "full";
+    }
+    const participant: Participant = {
+      token: randomUUID(),
+      clientId,
+      role: "viewer",
+      realtimeSessions: new Set(),
+      lastSeen: now,
+    };
+    room.participants.set(participant.token, participant);
+    room.lastActivity = now;
+    return { token: participant.token, options: room.options };
   }
 
-  authorize(code: string, token: string): boolean {
+  authorize(code: string, token: string | undefined): Participant | null {
     const room = this.room(code);
-    return Boolean(
-      room && token && (token === room.creatorToken || room.viewerTokens.has(token)),
-    );
+    if (!room || !token) return null;
+    return room.participants.get(token) ?? null;
+  }
+
+  /** Record a Cloudflare session opened through the proxy by this token. */
+  registerRealtimeSession(code: string, token: string, sessionId: string): boolean {
+    const participant = this.authorize(code, token);
+    if (!participant) return false;
+    participant.realtimeSessions.add(sessionId);
+    return true;
+  }
+
+  ownsRealtimeSession(code: string, token: string, sessionId: string): boolean {
+    return this.authorize(code, token)?.realtimeSessions.has(sessionId) ?? false;
+  }
+
+  /** True when any participant of the room opened this Cloudflare session. */
+  roomHasRealtimeSession(code: string, sessionId: string): boolean {
+    const room = this.room(code);
+    if (!room) return false;
+    for (const participant of room.participants.values()) {
+      if (participant.realtimeSessions.has(sessionId)) return true;
+    }
+    return false;
   }
 
   creatorOnline(room: Room) {
-    return Array.from(room.clients.values()).some((client) => client.role === "creator");
+    for (const client of room.clients.values()) {
+      if (client.participant.role === "creator") return true;
+    }
+    return false;
   }
 
   viewerCount(room: Room) {
-    return Array.from(room.clients.values()).filter((client) => client.role === "viewer")
-      .length;
+    let count = 0;
+    for (const client of room.clients.values()) {
+      if (client.participant.role === "viewer") count += 1;
+    }
+    return count;
+  }
+
+  private viewerTokenCount(room: Room) {
+    let count = 0;
+    for (const participant of room.participants.values()) {
+      if (participant.role === "viewer") count += 1;
+    }
+    return count;
+  }
+
+  private liveTokens(room: Room): Set<string> {
+    const live = new Set<string>();
+    for (const client of room.clients.values()) live.add(client.participant.token);
+    return live;
+  }
+
+  /** Drop viewer tokens with no socket for longer than the grace period. */
+  private pruneViewers(room: Room, now: number) {
+    const live = this.liveTokens(room);
+    for (const [token, participant] of room.participants) {
+      if (participant.role !== "viewer" || live.has(token)) continue;
+      if (now - participant.lastSeen > VIEWER_TOKEN_GRACE_MS) room.participants.delete(token);
+    }
   }
 
   wsClientCount() {
@@ -171,8 +290,8 @@ export class SessionHub {
   terminate(code: string): boolean {
     const room = this.room(code);
     if (!room) return false;
-    this.broadcast(room, { type: "creator-end" });
-    for (const client of room.clients.values()) client.socket.close(1000, "session ended");
+    this.broadcast(room, { type: "creator-end", reason: "terminated" });
+    for (const client of room.clients.values()) client.socket.close(4004, "session ended");
     this.retire(room);
     return true;
   }
@@ -189,11 +308,27 @@ export class SessionHub {
     if (this.ended.length > MAX_ENDED_SESSIONS) this.ended.length = MAX_ENDED_SESSIONS;
   }
 
-  private sweep() {
-    const now = Date.now();
+  sweep(now = Date.now()) {
     for (const room of Array.from(this.rooms.values())) {
       if (room.clients.size === 0 && now - room.lastActivity > IDLE_ROOM_TTL_MS) {
         this.retire(room);
+        continue;
+      }
+      this.pruneViewers(room, now);
+    }
+    this.chatLimiter.sweep(now);
+  }
+
+  /** ws-level liveness: a socket that misses one heartbeat window is terminated. */
+  heartbeat() {
+    for (const room of this.rooms.values()) {
+      for (const client of room.clients.values()) {
+        if (!client.alive) {
+          client.socket.terminate();
+          continue;
+        }
+        client.alive = false;
+        client.socket.ping();
       }
     }
   }
@@ -204,7 +339,7 @@ export class SessionHub {
 
   private broadcast(room: Room, value: unknown, role?: Role) {
     for (const client of room.clients.values()) {
-      if (!role || client.role === role) this.send(client.socket, value);
+      if (!role || client.participant.role === role) this.send(client.socket, value);
     }
   }
 
@@ -218,7 +353,8 @@ export class SessionHub {
 
   /**
    * Attach an already-upgraded WebSocket to a room. Returns false when the
-   * caller's token does not authorize the requested role.
+   * token does not exist, does not match the requested role, or was minted
+   * for a different client id.
    */
   connect(
     code: string,
@@ -228,27 +364,21 @@ export class SessionHub {
     socket: WebSocket,
   ): boolean {
     const room = this.room(code);
-    const allowed = Boolean(
-      room &&
-        clientId &&
-        (role === "creator" || role === "viewer") &&
-        token &&
-        (role === "creator" ? token === room.creatorToken : room.viewerTokens.has(token)),
-    );
-    if (!allowed || !room || !clientId || (role !== "creator" && role !== "viewer")) {
+    const participant = room && token ? room.participants.get(token) : undefined;
+    if (
+      !room ||
+      !participant ||
+      !clientId ||
+      participant.role !== role ||
+      participant.clientId !== clientId
+    ) {
       return false;
     }
 
-    const client: SocketClient = {
-      id: clientId,
-      connectionId: randomUUID(),
-      role,
-      socket,
-      lastInboundBytes: 0,
-      lastOutboundBytes: 0,
-    };
+    const client: SocketClient = { participant, socket, alive: true };
     room.clients.set(socket, client);
     room.lastActivity = Date.now();
+    participant.lastSeen = Date.now();
 
     this.send(socket, {
       type: "welcome",
@@ -256,8 +386,9 @@ export class SessionHub {
       messages: room.messages,
       tracks: room.sharedTracks,
       viewerCount: this.viewerCount(room),
+      creatorOnline: this.creatorOnline(room),
     });
-    if (role === "viewer") {
+    if (participant.role === "viewer") {
       this.broadcast(
         room,
         { type: "viewer-waiting", viewerCount: this.viewerCount(room) },
@@ -266,13 +397,22 @@ export class SessionHub {
     }
     this.presence(room);
 
+    socket.on("pong", () => {
+      client.alive = true;
+    });
     socket.on("message", (data, isBinary) => {
+      client.alive = true;
       if (!isBinary) this.handleMessage(room, client, data.toString());
     });
     const disconnect = () => {
       if (!room.clients.delete(socket)) return;
-      if (role === "viewer") {
-        this.broadcast(room, { type: "viewer-left", viewerId: clientId }, "creator");
+      participant.lastSeen = Date.now();
+      if (participant.role === "viewer") {
+        this.broadcast(
+          room,
+          { type: "viewer-left", viewerId: participant.clientId },
+          "creator",
+        );
       }
       room.lastActivity = Date.now();
       this.presence(room);
@@ -289,89 +429,129 @@ export class SessionHub {
     } catch {
       return;
     }
+    if (typeof message !== "object" || message === null) return;
     room.lastActivity = Date.now();
+    const { participant } = client;
 
-    if (message.type === "ping") {
-      this.send(client.socket, { type: "pong", at: Date.now() });
+    switch (message.type) {
+      case "ping":
+        this.send(client.socket, { type: "pong", at: Date.now() });
+        return;
+      case "stats":
+        this.recordStats(room, participant.clientId, message);
+        return;
+      case "chat":
+        this.handleChat(room, client, message);
+        return;
+      case "tracks-ready":
+      case "tracks-added":
+        if (participant.role === "creator") this.handleTracks(room, participant, message);
+        return;
+      case "viewer-audio":
+        if (participant.role === "viewer") this.handleViewerAudio(room, participant, message);
+        return;
+      case "options":
+        if (participant.role === "creator") this.handleOptions(room, message);
+        return;
+      case "creator-end":
+        if (participant.role === "creator") {
+          this.broadcast(room, { type: "creator-end", reason: "ended" }, "viewer");
+          room.sharedTracks = [];
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  private handleChat(room: Room, client: SocketClient, message: Record<string, unknown>) {
+    if (typeof message.text !== "string") return;
+    const text = message.text.trim().slice(0, MAX_CHAT_LENGTH);
+    if (!text) return;
+    if (!this.chatLimiter.allow(`${room.code}:${client.participant.token}`)) {
+      this.send(client.socket, { type: "error", code: "chat-rate-limit" });
       return;
     }
-
-    if (message.type === "stats") {
-      this.recordStats(room, client, message);
-      return;
+    const chat: ChatMessage = {
+      type: "chat",
+      id: randomUUID(),
+      senderId: client.participant.clientId,
+      senderRole: client.participant.role,
+      text,
+      timestamp: Date.now(),
+    };
+    room.messages.push(chat);
+    if (room.messages.length > MAX_MESSAGES) {
+      room.messages.splice(0, room.messages.length - MAX_MESSAGES);
     }
+    this.broadcast(room, chat);
+  }
 
-    if (message.type === "chat" && typeof message.text === "string") {
-      const text = message.text.trim().slice(0, 2000);
-      if (!text) return;
-      const chat: ChatMessage = {
-        type: "chat",
-        id: randomUUID(),
-        senderId: client.id,
-        senderRole: client.role,
-        text,
-        timestamp: Date.now(),
-      };
-      room.messages.push(chat);
-      if (room.messages.length > MAX_MESSAGES) {
-        room.messages.splice(0, room.messages.length - MAX_MESSAGES);
-      }
-      this.broadcast(room, chat);
-      return;
+  /**
+   * Accept only well-formed tracks on Cloudflare sessions this participant
+   * opened. `tracks-ready` replaces the room's track list (a republish after
+   * media recovery); `tracks-added` appends (a microphone added mid-session).
+   */
+  private handleTracks(room: Room, participant: Participant, message: Record<string, unknown>) {
+    if (!Array.isArray(message.tracks)) return;
+    const incoming: SharedTrack[] = [];
+    for (const raw of message.tracks) {
+      const track = parseSharedTrack(raw);
+      if (!track || !participant.realtimeSessions.has(track.sessionId)) return;
+      incoming.push({ ...track, ownerId: participant.clientId });
     }
-
-    if (
-      client.role === "creator" &&
-      (message.type === "tracks-ready" || message.type === "tracks-added") &&
-      Array.isArray(message.tracks)
-    ) {
-      const incoming = message.tracks as SharedTrack[];
+    if (message.type === "tracks-ready") {
+      room.sharedTracks = incoming.slice(0, MAX_SHARED_TRACKS);
+    } else {
       for (const track of incoming) {
+        if (room.sharedTracks.length >= MAX_SHARED_TRACKS) break;
         if (!room.sharedTracks.some((existing) => existing.trackName === track.trackName)) {
           room.sharedTracks.push(track);
         }
       }
-      this.broadcast(room, { type: message.type, tracks: incoming }, "viewer");
-      return;
     }
-
-    if (client.role === "viewer" && message.type === "viewer-audio" && message.track) {
-      this.broadcast(
-        room,
-        { type: "viewer-audio", track: message.track, viewerId: client.id },
-        "creator",
-      );
-      return;
-    }
-
-    if (client.role === "creator" && message.type === "mic-policy") {
-      room.options.allowViewerMic = Boolean(message.allowed);
-      this.broadcast(room, { type: "mic-policy", allowed: Boolean(message.allowed) }, "viewer");
-      return;
-    }
-
-    if (client.role === "creator" && message.type === "creator-end") {
-      this.broadcast(room, { type: "creator-end" }, "viewer");
-      room.sharedTracks = [];
-    }
+    this.broadcast(room, { type: message.type, tracks: incoming }, "viewer");
   }
 
-  private recordStats(room: Room, client: SocketClient, message: Record<string, unknown>) {
+  private handleViewerAudio(
+    room: Room,
+    participant: Participant,
+    message: Record<string, unknown>,
+  ) {
+    if (!room.options.allowViewerMic) return;
+    const track = parseSharedTrack(message.track);
+    if (!track || track.kind !== "audio" || track.source !== "viewer-mic") return;
+    if (!participant.realtimeSessions.has(track.sessionId)) return;
+    this.broadcast(
+      room,
+      {
+        type: "viewer-audio",
+        track: { ...track, ownerId: participant.clientId },
+        viewerId: participant.clientId,
+      },
+      "creator",
+    );
+  }
+
+  private handleOptions(room: Room, message: Record<string, unknown>) {
+    const options = parseSessionOptions(message.options);
+    if (!options) return;
+    room.options = options;
+    this.broadcast(room, { type: "options", options });
+  }
+
+  private recordStats(room: Room, clientId: string, message: Record<string, unknown>) {
     const inbound = Number(message.inboundBytes);
     const outbound = Number(message.outboundBytes);
     if (!Number.isFinite(inbound) || !Number.isFinite(outbound)) return;
     if (inbound < 0 || outbound < 0) return;
 
+    const last = room.stats.get(clientId) ?? { inbound: 0, outbound: 0 };
     // Counters are cumulative per RTCPeerConnection; a lower reading means the
     // client rebuilt its connection, so the new value is itself the delta.
-    const inboundDelta = inbound >= client.lastInboundBytes
-      ? inbound - client.lastInboundBytes
-      : inbound;
-    const outboundDelta = outbound >= client.lastOutboundBytes
-      ? outbound - client.lastOutboundBytes
-      : outbound;
-    client.lastInboundBytes = inbound;
-    client.lastOutboundBytes = outbound;
+    const inboundDelta = inbound >= last.inbound ? inbound - last.inbound : inbound;
+    const outboundDelta = outbound >= last.outbound ? outbound - last.outbound : outbound;
+    room.stats.set(clientId, { inbound, outbound });
 
     room.egressBytes += inboundDelta;
     room.ingressBytes += outboundDelta;

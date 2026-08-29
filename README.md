@@ -16,7 +16,8 @@ WebRTC, the Cloudflare Realtime SFU, Convex, and Lucide icons.
   [`@clammet/convex-googly-auth`](https://github.com/clammet/convex-googly-auth).
 - Admin dashboard at `/admin` with live sessions, an SFU egress monitor, and a
   terminate-session action.
-- Retries viewer WebSocket and WebRTC connections with exponential backoff.
+- Retries WebSocket and WebRTC connections with exponential backoff and gives up
+  after a bounded number of attempts.
 - Stores presenter defaults in browser local storage.
 
 ## Architecture
@@ -77,7 +78,9 @@ pnpm devsetup       # one-time (idempotent) dev environment setup
 pnpm dev            # convex + backend + web with proxy/HMR
 pnpm build          # static frontend export + bundled backend (dist/)
 pnpm start          # run the built backend (serves dist/client)
-pnpm test           # build + integration tests against the built backend
+pnpm test           # unit tests, then build + integration tests against the built backend
+pnpm test:unit      # hub/ledger unit tests only (no build)
+pnpm typecheck
 pnpm lint
 pnpm image:build    # docker build
 pnpm image:publish  # multi-arch buildx push (IMAGE_NAME=… IMAGE_TAG=…)
@@ -99,6 +102,17 @@ docker run --rm -p 8080:8080 \
   -e ADMIN_EMAILS=you@example.com \
   showmeplease:latest
 ```
+
+Put a TLS terminator in front of the container. Browsers only allow screen
+capture (`getDisplayMedia`) in a secure context, so the app must be reached
+over `https://` (or `localhost`); a plain `http://host:8080` shows a warning
+and cannot share. When that proxy sets `X-Forwarded-For` / `X-Forwarded-Host`
+/ `X-Forwarded-Proto`, set `TRUST_PROXY=1` so rate limits see client
+addresses; set `PUBLIC_ORIGIN` to the public URL for absolute links in HTML.
+
+Viewers connect to the Cloudflare SFU with STUN only unless `TURN_KEY_ID` and
+`TURN_KEY_API_TOKEN` (a Cloudflare Realtime TURN key) are set, in which case
+the backend hands out short-lived TURN credentials at `/api/realtime/ice`.
 
 There is also a compose file in `deploy/docker-compose.yml`. The container
 exposes port `8080`, `/healthz` for readiness/liveness, and an unauthenticated

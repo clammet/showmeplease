@@ -1,6 +1,6 @@
 "use client";
 
-/* eslint-disable jsx-a11y/media-has-caption, react-hooks/refs, react-hooks/set-state-in-effect */
+/* eslint-disable jsx-a11y/media-has-caption */
 
 import {
   Check,
@@ -21,71 +21,51 @@ import {
 import {
   FormEvent,
   PointerEvent as ReactPointerEvent,
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
 import {
-  RealtimeConnection,
-  SessionOptions,
-  SharedTrack,
-} from "@/lib/realtime";
+  coerceSessionOptions,
+  DEFAULT_OPTIONS,
+  MAX_BITRATE_KBPS,
+  MIN_BITRATE_KBPS,
+  type SessionOptions,
+} from "@/lib/options";
+import {
+  SessionClient,
+  type ChatMessage,
+  type Role,
+  type SessionEvent,
+  type SessionStatus,
+} from "@/lib/session";
 import AccountControls from "./AccountControls";
 
-type Role = "creator" | "viewer";
 type AppMode = "landing" | "session";
-type SessionStatus =
-  | "waiting"
-  | "connecting"
-  | "live"
-  | "reconnecting"
-  | "ended"
-  | "error";
-
-type ChatMessage = {
-  type: "chat";
-  id: string;
-  senderId: string;
-  senderRole: Role;
-  text: string;
-  timestamp: number;
-};
-
-type ServerEvent = {
-  type: string;
-  options?: SessionOptions;
-  messages?: ChatMessage[];
-  tracks?: SharedTrack[];
-  track?: SharedTrack;
-  viewerCount?: number;
-  creatorOnline?: boolean;
-  allowed?: boolean;
-};
 
 const STORAGE_KEY = "showmeplease.session-options.v1";
-
-const DEFAULT_OPTIONS: SessionOptions = {
-  codec: "auto",
-  maxBitrateKbps: 6000,
-  frameRate: 30,
-  includeSystemAudio: true,
-  allowViewerMic: false,
-};
+const CLIENT_ID_KEY = "showmeplease.client-id";
 
 function parseOptions(value: string | null): SessionOptions {
   if (!value) return DEFAULT_OPTIONS;
   try {
-    const parsed = JSON.parse(value) as Partial<SessionOptions>;
-    return {
-      ...DEFAULT_OPTIONS,
-      ...parsed,
-      maxBitrateKbps: Math.min(
-        20000,
-        Math.max(500, Number(parsed.maxBitrateKbps) || 6000),
-      ),
-    };
+    return coerceSessionOptions(JSON.parse(value));
   } catch {
     return DEFAULT_OPTIONS;
+  }
+}
+
+/** One id per browser tab, so a reload can reclaim its viewer token. */
+function loadClientId(): string {
+  try {
+    const existing = sessionStorage.getItem(CLIENT_ID_KEY);
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    sessionStorage.setItem(CLIENT_ID_KEY, created);
+    return created;
+  } catch {
+    return crypto.randomUUID();
   }
 }
 
@@ -106,11 +86,9 @@ function SettingsDialog({
   onClose: () => void;
   onSave: (options: SessionOptions) => void;
 }) {
+  // The parent remounts this dialog (via `key`) each time it opens, so the
+  // draft starts from the current options without an effect.
   const [draft, setDraft] = useState(options);
-
-  useEffect(() => {
-    if (open) setDraft(options);
-  }, [open, options]);
 
   useEffect(() => {
     if (!open) return;
@@ -174,8 +152,8 @@ function SettingsDialog({
             </span>
             <input
               type="range"
-              min="500"
-              max="20000"
+              min={MIN_BITRATE_KBPS}
+              max={MAX_BITRATE_KBPS}
               step="500"
               value={draft.maxBitrateKbps}
               onChange={(event) =>
@@ -191,7 +169,7 @@ function SettingsDialog({
               onChange={(event) =>
                 setDraft({
                   ...draft,
-                  frameRate: Number(event.target.value) as 15 | 30 | 60,
+                  frameRate: Number(event.target.value) as SessionOptions["frameRate"],
                 })
               }
             >
@@ -362,55 +340,29 @@ export default function ShareApp() {
   const [chatOpen, setChatOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [micMuted, setMicMuted] = useState(true);
-  const [viewerMicAllowed, setViewerMicAllowed] = useState(false);
   const [copied, setCopied] = useState(false);
   const [dockPosition, setDockPosition] = useState({ x: 20, y: 20 });
   const [clientId, setClientId] = useState("");
+  const [secureContext, setSecureContext] = useState(true);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const creatorAudioRef = useRef<HTMLAudioElement>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mediaRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectAttemptRef = useRef(0);
-  const activeRef = useRef(false);
-  const roleRef = useRef<Role>("creator");
-  const codeRef = useRef("");
-  const tokenRef = useRef("");
-  const optionsRef = useRef(options);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const microphoneRef = useRef<MediaStream | null>(null);
-  const connectionRef = useRef<RealtimeConnection | null>(null);
-  const publishedRef = useRef(false);
-  const publishedTracksRef = useRef<SharedTrack[]>([]);
-  const publishingRef = useRef(false);
-  const pulledTracksRef = useRef(new Set<string>());
-  const viewerTracksRef = useRef<SharedTrack[]>([]);
-  const seenMessageIdsRef = useRef(new Set<string>());
+  const clientRef = useRef<SessionClient | null>(null);
   const chatOpenRef = useRef(false);
-  const handleSocketMessageRef = useRef<(event: MessageEvent) => void>(() => undefined);
-  const ensurePublishedRef = useRef<() => Promise<void>>(async () => undefined);
-  const pullViewerTracksRef = useRef<(tracks: SharedTrack[]) => Promise<void>>(
-    async () => undefined,
-  );
 
   useEffect(() => {
-    setClientId(crypto.randomUUID());
-    const stored = parseOptions(localStorage.getItem(STORAGE_KEY));
-    setOptions(stored);
-    optionsRef.current = stored;
+    // Browser-only values read once after hydration; reading them during
+    // render would differ from the static export and break hydration.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setClientId(loadClientId());
+    setOptions(parseOptions(localStorage.getItem(STORAGE_KEY)));
+    setSecureContext(window.isSecureContext);
     const queryCode = normaliseCode(new URLSearchParams(window.location.search).get("join") || "");
     if (queryCode) setJoinCode(queryCode);
   }, []);
 
   useEffect(() => {
-    optionsRef.current = options;
-  }, [options]);
-
-  useEffect(() => {
-    localStreamRef.current = localStream;
     if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
   }, [localStream]);
 
@@ -422,289 +374,30 @@ export default function ShareApp() {
     if (creatorAudioRef.current) creatorAudioRef.current.srcObject = creatorAudio;
   }, [creatorAudio]);
 
-  useEffect(() => {
-    chatOpenRef.current = chatOpen;
-    if (chatOpen) setUnread(0);
-  }, [chatOpen]);
-
-  useEffect(() => {
-    if (mode !== "session") return;
-    setDockPosition({ x: 20, y: Math.max(20, window.innerHeight - 82) });
-  }, [mode]);
-
-  // Report cumulative WebRTC byte counters so the backend can meter SFU
-  // egress (what this client receives) and ingress (what it publishes).
-  useEffect(() => {
-    if (mode !== "session") return;
-    const timer = setInterval(() => {
-      void connectionRef.current?.byteTotals().then((totals) => {
-        if (totals && socketRef.current?.readyState === WebSocket.OPEN) {
-          socketRef.current.send(JSON.stringify({ type: "stats", ...totals }));
-        }
-      });
-    }, 10000);
-    return () => clearInterval(timer);
-  }, [mode]);
-
-  const sendSocket = (value: unknown) => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(value));
-    }
+  const toggleChat = (open: boolean) => {
+    chatOpenRef.current = open;
+    setChatOpen(open);
+    if (open) setUnread(0);
   };
 
-  const openSocket = (nextRole: Role, code: string, token: string) => {
-    if (!clientId || !activeRef.current) return;
-    socketRef.current?.close();
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = new URL(`${protocol}//${window.location.host}/api/sessions/${code}/ws`);
-    url.searchParams.set("role", nextRole);
-    url.searchParams.set("token", token);
-    url.searchParams.set("clientId", clientId);
-    const socket = new WebSocket(url);
-    socketRef.current = socket;
+  // Tear the session down if the component goes away mid-share.
+  useEffect(
+    () => () => {
+      clientRef.current?.stop(true);
+      clientRef.current = null;
+    },
+    [],
+  );
 
-    socket.addEventListener("open", () => {
-      reconnectAttemptRef.current = 0;
-      setStatus((current) =>
-        current === "reconnecting" ? (connectionRef.current ? "live" : "waiting") : current,
-      );
-      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
-      pingTimerRef.current = setInterval(() => sendSocket({ type: "ping" }), 15000);
-    });
-    socket.addEventListener("message", (event) => handleSocketMessageRef.current(event));
-    socket.addEventListener("close", () => {
-      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
-      if (!activeRef.current) return;
-      setStatus("reconnecting");
-      const attempt = reconnectAttemptRef.current++;
-      const delay = Math.min(10000, 500 * 2 ** attempt) + Math.random() * 300;
-      reconnectTimerRef.current = setTimeout(
-        () => openSocket(roleRef.current, codeRef.current, tokenRef.current),
-        delay,
-      );
-    });
-  };
-
-  const mergeMessages = (incoming: ChatMessage[]) => {
-    setMessages((current) => {
-      const merged = [...current];
-      for (const message of incoming) {
-        if (seenMessageIdsRef.current.has(message.id)) continue;
-        seenMessageIdsRef.current.add(message.id);
-        merged.push(message);
-      }
-      return merged.sort((a, b) => a.timestamp - b.timestamp).slice(-100);
-    });
-  };
-
-  const scheduleViewerMediaRetry = () => {
-    if (!activeRef.current || roleRef.current !== "viewer") return;
-    setStatus("reconnecting");
-    window.setTimeout(() => {
-      connectionRef.current?.close();
-      connectionRef.current = null;
-      pulledTracksRef.current.clear();
-      void pullViewerTracksRef.current(viewerTracksRef.current);
-    }, 1200);
-  };
-
-  const handleViewerConnectionState = (state: RTCPeerConnectionState) => {
-    if (state === "connected") {
-      if (mediaRetryTimerRef.current) clearTimeout(mediaRetryTimerRef.current);
-      mediaRetryTimerRef.current = null;
-      setStatus("live");
-    }
-    if (state === "failed") scheduleViewerMediaRetry();
-    if (state === "disconnected") {
-      setStatus("reconnecting");
-      if (mediaRetryTimerRef.current) clearTimeout(mediaRetryTimerRef.current);
-      mediaRetryTimerRef.current = setTimeout(scheduleViewerMediaRetry, 4000);
-    }
-  };
-
-  ensurePublishedRef.current = async () => {
-    if (publishedRef.current || publishingRef.current || !localStreamRef.current) return;
-    publishingRef.current = true;
-    setStatus("connecting");
-    try {
-      const connection = new RealtimeConnection({
-        code: codeRef.current,
-        token: tokenRef.current,
-        preferences: optionsRef.current,
-        onRemoteStream: (stream) => setCreatorAudio(new MediaStream(stream.getAudioTracks())),
-        onConnectionState: (state) => {
-          if (state === "connected") setStatus("live");
-          if (state === "failed") setStatus("error");
-        },
-      });
-      connectionRef.current = connection;
-      const sources: Array<{
-        track: MediaStreamTrack;
-        source: SharedTrack["source"];
-      }> = localStreamRef.current.getTracks().map((track) => ({
-        track,
-        source: "screen" as const,
-      }));
-      const micTrack = microphoneRef.current?.getAudioTracks()[0];
-      if (micTrack) sources.push({ track: micTrack, source: "presenter-mic" as const });
-      const tracks = (await connection.publishTracks(sources)).map((track) => ({
-        ...track,
-        ownerId: clientId,
-      }));
-      publishedRef.current = true;
-      publishedTracksRef.current = tracks;
-      sendSocket({ type: "tracks-ready", tracks });
-      setStatus("live");
-    } catch (publishError) {
-      setStatus("error");
-      setError(
-        publishError instanceof Error ? publishError.message : "Could not start the relay",
-      );
-    } finally {
-      publishingRef.current = false;
-    }
-  };
-
-  pullViewerTracksRef.current = async (tracks: SharedTrack[]) => {
-    const unique = tracks.filter((track) => !pulledTracksRef.current.has(track.trackName));
-    for (const track of tracks) {
-      if (!viewerTracksRef.current.some((item) => item.trackName === track.trackName)) {
-        viewerTracksRef.current.push(track);
-      }
-    }
-    if (!unique.length) return;
-    setStatus("connecting");
-    try {
-      if (!connectionRef.current) {
-        connectionRef.current = new RealtimeConnection({
-          code: codeRef.current,
-          token: tokenRef.current,
-          preferences: optionsRef.current,
-          onRemoteStream: (stream) => setRemoteStream(new MediaStream(stream.getTracks())),
-          onConnectionState: handleViewerConnectionState,
-        });
-      }
-      await connectionRef.current.pullTracks(unique);
-      unique.forEach((track) => pulledTracksRef.current.add(track.trackName));
-    } catch (pullError) {
-      const message =
-        pullError instanceof Error ? pullError.message : "Could not receive the share";
-      setError(message);
-      if (message.includes("REALTIME_APP_ID")) {
-        setStatus("error");
-      } else {
-        scheduleViewerMediaRetry();
-      }
-    }
-  };
-
-  handleSocketMessageRef.current = (event) => {
-    let message: ServerEvent;
-    try {
-      message = JSON.parse(event.data) as ServerEvent;
-    } catch {
-      return;
-    }
-
-    if (message.type === "welcome") {
-      if (message.options) {
-        setOptions(message.options);
-        optionsRef.current = message.options;
-        setViewerMicAllowed(message.options.allowViewerMic);
-      }
-      if (message.messages) mergeMessages(message.messages);
-      if (typeof message.viewerCount === "number") setViewerCount(message.viewerCount);
-      if (roleRef.current === "viewer" && message.tracks?.length) {
-        void pullViewerTracksRef.current(message.tracks);
-      }
-      if (roleRef.current === "creator" && (message.viewerCount || 0) > 0) {
-        if (publishedTracksRef.current.length) {
-          sendSocket({ type: "tracks-ready", tracks: publishedTracksRef.current });
-        } else {
-          void ensurePublishedRef.current();
-        }
-      }
-      return;
-    }
-
-    if (message.type === "presence") {
-      if (typeof message.viewerCount === "number") setViewerCount(message.viewerCount);
-      return;
-    }
-
-    if (message.type === "viewer-waiting" && roleRef.current === "creator") {
-      if (typeof message.viewerCount === "number") setViewerCount(message.viewerCount);
-      void ensurePublishedRef.current();
-      return;
-    }
-
-    if (
-      roleRef.current === "viewer" &&
-      (message.type === "tracks-ready" || message.type === "tracks-added") &&
-      message.tracks
-    ) {
-      void pullViewerTracksRef.current(message.tracks);
-      return;
-    }
-
-    if (roleRef.current === "creator" && message.type === "viewer-audio" && message.track) {
-      void connectionRef.current?.pullTracks([message.track]);
-      return;
-    }
-
-    if (message.type === "mic-policy") {
-      setViewerMicAllowed(Boolean(message.allowed));
-      if (!message.allowed) {
-        microphoneRef.current?.getAudioTracks().forEach((track) => {
-          track.enabled = false;
-        });
-        setMicMuted(true);
-      }
-      return;
-    }
-
-    if (message.type === "creator-end") {
-      setStatus("ended");
-      connectionRef.current?.close();
-      setRemoteStream(null);
-      return;
-    }
-
-    if (message.type === "chat") {
-      const chat = message as unknown as ChatMessage;
-      if (!seenMessageIdsRef.current.has(chat.id)) {
-        mergeMessages([chat]);
-        if (!chatOpenRef.current && chat.senderId !== clientId) {
-          setUnread((count) => count + 1);
-        }
-      }
-    }
-  };
-
-  const stopSession = (notify = true) => {
-    if (notify && roleRef.current === "creator") sendSocket({ type: "creator-end" });
-    activeRef.current = false;
-    socketRef.current?.close();
-    connectionRef.current?.close();
-    connectionRef.current = null;
-    localStreamRef.current?.getTracks().forEach((track) => track.stop());
-    microphoneRef.current?.getTracks().forEach((track) => track.stop());
-    localStreamRef.current = null;
-    microphoneRef.current = null;
-    publishedRef.current = false;
-    publishedTracksRef.current = [];
-    publishingRef.current = false;
-    pulledTracksRef.current.clear();
-    viewerTracksRef.current = [];
-    seenMessageIdsRef.current.clear();
-    if (pingTimerRef.current) clearInterval(pingTimerRef.current);
-    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-    if (mediaRetryTimerRef.current) clearTimeout(mediaRetryTimerRef.current);
+  const leaveSession = useCallback((notify: boolean) => {
+    clientRef.current?.stop(notify);
+    clientRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
     setCreatorAudio(null);
     setMessages([]);
     setUnread(0);
+    chatOpenRef.current = false;
     setChatOpen(false);
     setMicMuted(true);
     setViewerCount(0);
@@ -713,31 +406,89 @@ export default function ShareApp() {
     setMode("landing");
     setSessionCode("");
     window.history.replaceState({}, "", "/");
-  };
+  }, []);
 
-  useEffect(
-    () => () => {
-      activeRef.current = false;
-      socketRef.current?.close();
-      connectionRef.current?.close();
-      localStreamRef.current?.getTracks().forEach((track) => track.stop());
-      microphoneRef.current?.getTracks().forEach((track) => track.stop());
-      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (mediaRetryTimerRef.current) clearTimeout(mediaRetryTimerRef.current);
+  const handleEvent = useCallback(
+    (event: SessionEvent) => {
+      switch (event.type) {
+        case "status":
+          setStatus(event.status);
+          return;
+        case "options":
+          setOptions(event.options);
+          return;
+        case "viewer-count":
+          setViewerCount(event.viewerCount);
+          return;
+        case "chat":
+          setMessages((current) =>
+            [...current, event.message].sort((a, b) => a.timestamp - b.timestamp).slice(-100),
+          );
+          if (!chatOpenRef.current && event.message.senderId !== clientRef.current?.clientId) {
+            setUnread((count) => count + 1);
+          }
+          return;
+        case "remote-stream":
+          setRemoteStream(event.stream);
+          return;
+        case "creator-audio":
+          setCreatorAudio(event.stream);
+          return;
+        case "mic":
+          setMicMuted(event.muted);
+          return;
+        case "error":
+          setError(event.message);
+          return;
+        case "ended":
+          if (event.reason === "presenter" && clientRef.current?.role === "creator") {
+            // Screen capture ended from the browser's own "Stop sharing" control.
+            leaveSession(false);
+            return;
+          }
+          if (event.reason === "terminated") setError("An administrator ended this session.");
+          if (event.reason === "unauthorized") setError("This session is no longer available.");
+          if (event.reason === "gave-up") setError("Lost the connection to the server.");
+          return;
+        default:
+          return;
+      }
     },
-    [],
+    [leaveSession],
   );
+
+  const startSession = (
+    nextRole: Role,
+    code: string,
+    token: string,
+    sessionOptions: SessionOptions,
+    capture: MediaStream | null,
+  ) => {
+    const client = new SessionClient({
+      role: nextRole,
+      code,
+      token,
+      clientId,
+      options: sessionOptions,
+      localStream: capture ?? undefined,
+      onEvent: handleEvent,
+    });
+    clientRef.current = client;
+    setRole(nextRole);
+    setSessionCode(code);
+    setOptions(sessionOptions);
+    setLocalStream(capture);
+    setDockPosition({ x: 20, y: Math.max(20, window.innerHeight - 82) });
+    setMode("session");
+    setStatus("waiting");
+    window.history.replaceState({}, "", nextRole === "creator" ? `/?host=${code}` : `/?join=${code}`);
+    client.start();
+  };
 
   const saveOptions = (nextOptions: SessionOptions) => {
     setOptions(nextOptions);
-    optionsRef.current = nextOptions;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextOptions));
-    if (mode === "session" && roleRef.current === "creator") {
-      setViewerMicAllowed(nextOptions.allowViewerMic);
-      sendSocket({ type: "mic-policy", allowed: nextOptions.allowViewerMic });
-      void connectionRef.current?.updatePreferences(nextOptions);
-    }
+    clientRef.current?.updateOptions(nextOptions);
   };
 
   const createShare = async () => {
@@ -746,6 +497,9 @@ export default function ShareApp() {
     setError("");
     let capture: MediaStream | null = null;
     try {
+      if (!window.isSecureContext) {
+        throw new Error("Screen sharing needs HTTPS (or localhost). Open this page over https.");
+      }
       if (!navigator.mediaDevices?.getDisplayMedia) {
         throw new Error("Screen sharing is not supported in this browser");
       }
@@ -756,7 +510,7 @@ export default function ShareApp() {
       const response = await fetch("/api/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ options }),
+        body: JSON.stringify({ options, clientId }),
       });
       const payload = (await response.json()) as {
         code?: string;
@@ -766,22 +520,7 @@ export default function ShareApp() {
       if (!response.ok || !payload.code || !payload.token) {
         throw new Error(payload.error || "Could not create the share");
       }
-
-      roleRef.current = "creator";
-      codeRef.current = payload.code;
-      tokenRef.current = payload.token;
-      activeRef.current = true;
-      setRole("creator");
-      setSessionCode(payload.code);
-      setLocalStream(capture);
-      setViewerMicAllowed(options.allowViewerMic);
-      setMode("session");
-      setStatus("waiting");
-      window.history.replaceState({}, "", `/?host=${payload.code}`);
-      capture.getVideoTracks()[0]?.addEventListener("ended", () => stopSession(true), {
-        once: true,
-      });
-      openSocket("creator", payload.code, payload.token);
+      startSession("creator", payload.code, payload.token, options, capture);
     } catch (createError) {
       capture?.getTracks().forEach((track) => track.stop());
       setError(createError instanceof Error ? createError.message : "Could not create the share");
@@ -813,67 +552,11 @@ export default function ShareApp() {
       if (!response.ok || !payload.token || !payload.options) {
         throw new Error(payload.error || "That share is not available");
       }
-      roleRef.current = "viewer";
-      codeRef.current = code;
-      tokenRef.current = payload.token;
-      activeRef.current = true;
-      optionsRef.current = payload.options;
-      setOptions(payload.options);
-      setViewerMicAllowed(payload.options.allowViewerMic);
-      setRole("viewer");
-      setSessionCode(code);
-      setMode("session");
-      setStatus("waiting");
-      window.history.replaceState({}, "", `/?join=${code}`);
-      openSocket("viewer", code, payload.token);
+      startSession("viewer", code, payload.token, payload.options, null);
     } catch (joinError) {
       setError(joinError instanceof Error ? joinError.message : "Could not join the share");
     } finally {
       setBusy(false);
-    }
-  };
-
-  const toggleMicrophone = async () => {
-    if (role === "viewer" && !viewerMicAllowed) return;
-    const existingTrack = microphoneRef.current?.getAudioTracks()[0];
-    if (existingTrack) {
-      existingTrack.enabled = !existingTrack.enabled;
-      setMicMuted(!existingTrack.enabled);
-      return;
-    }
-    try {
-      const mic = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      microphoneRef.current = mic;
-      setMicMuted(false);
-      if (!connectionRef.current) {
-        if (roleRef.current === "creator") return;
-        connectionRef.current = new RealtimeConnection({
-          code: codeRef.current,
-          token: tokenRef.current,
-          preferences: optionsRef.current,
-          onRemoteStream: (stream) => setRemoteStream(new MediaStream(stream.getTracks())),
-          onConnectionState: handleViewerConnectionState,
-        });
-      }
-      if (!connectionRef.current) throw new Error("Media connection is not ready yet");
-      const source = roleRef.current === "creator" ? "presenter-mic" : "viewer-mic";
-      const [published] = await connectionRef.current.publishTracks([
-        { track: mic.getAudioTracks()[0], source },
-      ]);
-      const track = { ...published, ownerId: clientId };
-      if (roleRef.current === "creator") {
-        publishedTracksRef.current.push(track);
-        sendSocket({ type: "tracks-added", tracks: [track] });
-      } else {
-        sendSocket({ type: "viewer-audio", track });
-      }
-    } catch (micError) {
-      microphoneRef.current?.getTracks().forEach((track) => track.stop());
-      microphoneRef.current = null;
-      setMicMuted(true);
-      setError(micError instanceof Error ? micError.message : "Microphone access failed");
     }
   };
 
@@ -915,6 +598,9 @@ export default function ShareApp() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
+
+  const viewerMicAllowed = options.allowViewerMic;
+  const terminal = status === "ended" || status === "error";
 
   const statusCopy =
     role === "creator"
@@ -995,6 +681,13 @@ export default function ShareApp() {
             </button>
           </form>
 
+          {!secureContext && (
+            <div className="inline-error" role="alert">
+              <CircleAlert size={16} />
+              <span>This page is not served over HTTPS, so browsers will refuse screen capture.</span>
+            </div>
+          )}
+
           {error && (
             <div className="inline-error" role="alert">
               <CircleAlert size={16} />
@@ -1008,6 +701,7 @@ export default function ShareApp() {
         </p>
 
         <SettingsDialog
+          key={settingsOpen ? "open" : "closed"}
           open={settingsOpen}
           options={options}
           sessionActive={false}
@@ -1027,10 +721,10 @@ export default function ShareApp() {
           <video ref={remoteVideoRef} autoPlay playsInline className="share-video" />
         )}
 
-        {role === "viewer" && status !== "live" && (
+        {(role === "viewer" ? status !== "live" : terminal) && (
           <div className="stage-state">
             <div className={`state-orb ${status}`}>
-              {status === "ended" || status === "error" ? (
+              {terminal ? (
                 <MonitorUp size={27} />
               ) : (
                 <LoaderCircle className="spin" size={25} />
@@ -1039,22 +733,22 @@ export default function ShareApp() {
             <h1>{statusCopy}</h1>
             <p>
               {status === "reconnecting"
-                ? "We’ll keep trying automatically."
+                ? "We\u2019ll keep trying automatically."
                 : status === "ended"
                   ? "The presenter stopped this session."
                   : status === "error"
                     ? error
                     : `Share code ${sessionCode}`}
             </p>
-            {(status === "ended" || status === "error") && (
-              <button className="button stage-button" onClick={() => stopSession(false)}>
+            {terminal && (
+              <button className="button stage-button" onClick={() => leaveSession(false)}>
                 Return home
               </button>
             )}
           </div>
         )}
 
-        {role === "creator" && (
+        {role === "creator" && !terminal && (
           <div className="preview-label">
             <span className={`status-dot ${status}`} />
             {statusCopy}
@@ -1092,7 +786,7 @@ export default function ShareApp() {
         </button>
         <button
           className={`dock-button ${chatOpen ? "active" : ""}`}
-          onClick={() => setChatOpen((open) => !open)}
+          onClick={() => toggleChat(!chatOpen)}
           title="Toggle chat"
           aria-label="Toggle chat"
         >
@@ -1101,8 +795,8 @@ export default function ShareApp() {
         </button>
         <button
           className={`dock-button ${!micMuted ? "active" : ""}`}
-          onClick={toggleMicrophone}
-          disabled={role === "viewer" && !viewerMicAllowed}
+          onClick={() => void clientRef.current?.toggleMicrophone()}
+          disabled={terminal || (role === "viewer" && !viewerMicAllowed)}
           title={
             role === "viewer" && !viewerMicAllowed
               ? "The presenter has disabled viewer microphones"
@@ -1124,7 +818,7 @@ export default function ShareApp() {
             <SlidersHorizontal size={18} />
           </button>
         )}
-        <button className="dock-button danger" onClick={() => stopSession(true)} title="Leave session" aria-label="Leave session">
+        <button className="dock-button danger" onClick={() => leaveSession(true)} title="Leave session" aria-label="Leave session">
           <X size={18} />
         </button>
       </div>
@@ -1141,11 +835,12 @@ export default function ShareApp() {
         open={chatOpen}
         messages={messages}
         clientId={clientId}
-        onClose={() => setChatOpen(false)}
-        onSend={(text) => sendSocket({ type: "chat", text })}
+        onClose={() => toggleChat(false)}
+        onSend={(text) => clientRef.current?.sendChat(text)}
       />
 
       <SettingsDialog
+        key={settingsOpen ? "open" : "closed"}
         open={settingsOpen}
         options={options}
         sessionActive

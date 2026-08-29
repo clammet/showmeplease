@@ -22,6 +22,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: "showmeplease — simple screen sharing",
     description: "Create a private screen share or join one with a short code.",
+    icons: { icon: "/favicon.svg" },
     openGraph: {
       title: "showmeplease",
       description: "Simple screen sharing.",

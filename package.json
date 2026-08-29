@@ -16,7 +16,9 @@
     "start": "node dist/backend/index.mjs",
     "image:build": "docker build --tag ${IMAGE_NAME:-showmeplease}:${IMAGE_TAG:-latest} .",
     "image:publish": "docker buildx build --platform ${IMAGE_PLATFORMS:-linux/amd64,linux/arm64} --tag ${IMAGE_NAME:?Set IMAGE_NAME to the registry/repository}:${IMAGE_TAG:-latest} --push .",
-    "test": "pnpm build && node --test tests/*.test.mjs",
+    "test": "pnpm test:unit && pnpm build && node --test tests/backend.test.mjs tests/rendered-html.test.mjs",
+    "test:unit": "node --import tsx --test tests/hub.test.mjs",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern convex/_generated"
   },
   "dependencies": {

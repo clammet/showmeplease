@@ -111,9 +111,10 @@ export class EgressLedger {
   }
 
   bytesInLast(minutes: number, now = Date.now()): number {
+    // Current minute plus the (minutes - 1) before it.
     const cutoff = Math.floor(now / 60_000) - minutes;
     return this.buckets
-      .filter((bucket) => bucket.minute > cutoff)
+      .filter((bucket) => bucket.minute > cutoff && bucket.minute <= cutoff + minutes)
       .reduce((sum, bucket) => sum + bucket.egressBytes, 0);
   }
 
@@ -243,6 +244,7 @@ export class CloudflareUsagePoller {
       const since = new Date(rangeStart).toISOString().slice(0, 10);
       const response = await fetch("https://api.cloudflare.com/client/v4/graphql", {
         method: "POST",
+        signal: AbortSignal.timeout(30_000),
         headers: {
           authorization: `Bearer ${this.options.apiToken}`,
           "content-type": "application/json",
@@ -255,6 +257,9 @@ export class CloudflareUsagePoller {
           },
         }),
       });
+      if (!response.ok) {
+        throw new Error(`Cloudflare analytics request failed (${response.status})`);
+      }
       const payload = (await response.json()) as {
         data?: {
           viewer?: {
@@ -272,9 +277,6 @@ export class CloudflareUsagePoller {
         };
         errors?: Array<{ message?: string }>;
       };
-      if (!response.ok) {
-        throw new Error(`Cloudflare analytics request failed (${response.status})`);
-      }
       if (payload.errors?.length) {
         throw new Error(payload.errors.map((error) => error.message).join("; "));
       }
