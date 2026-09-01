@@ -15,6 +15,7 @@ const DEFAULT_OPTIONS = {
   frameRate: 30,
   includeSystemAudio: true,
   allowViewerMic: false,
+  allowViewerAnnotations: false,
 };
 
 async function startBackend(overrides = {}) {

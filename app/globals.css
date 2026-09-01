@@ -471,8 +471,55 @@ select:focus-visible,
   background: #070908;
 }
 
+.annotation-layer {
+  position: absolute;
+  z-index: 1;
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+  touch-action: none;
+}
+
+.annotation-layer.tool-pencil,
+.annotation-layer.tool-laser {
+  pointer-events: auto;
+}
+
+.annotation-layer.tool-pencil {
+  cursor: crosshair;
+}
+
+.annotation-layer.tool-laser {
+  cursor: none;
+}
+
+.pencil-strokes {
+  pointer-events: none;
+}
+
+.laser-layer {
+  position: absolute;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.laser-dot,
+.laser-afterimage {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.laser-dot {
+  box-shadow: 0 0 7px currentColor;
+}
+
 .preview-label {
   position: absolute;
+  z-index: 3;
   top: 18px;
   left: 18px;
   display: inline-flex;
@@ -646,6 +693,84 @@ select:focus-visible,
 .dock-button.danger:hover {
   color: #ffb0a5;
   background: rgba(190, 69, 53, 0.16);
+}
+
+.annotation-controls {
+  position: relative;
+  display: flex;
+}
+
+.annotation-tool-shelf,
+.annotation-color-row {
+  position: absolute;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(22, 29, 26, 0.94);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(16px);
+}
+
+.annotation-tool-shelf {
+  bottom: calc(100% + 12px);
+  transform: translateX(-50%);
+  animation: annotation-tools-in 140ms ease-out;
+}
+
+.annotation-color-row {
+  bottom: calc(100% + 9px);
+  gap: 7px;
+  padding: 8px;
+  transform: translateX(-50%);
+}
+
+.color-choice,
+.color-picker-choice {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.color-choice {
+  padding: 0;
+}
+
+.color-choice:hover,
+.color-choice.selected {
+  border-color: white;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
+}
+
+.color-picker-choice {
+  display: grid;
+  place-items: center;
+  color: #e2e8e5;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.color-picker-choice:hover,
+.color-picker-choice:has(input:focus-visible) {
+  color: white;
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+.color-picker-choice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .unread-badge {
@@ -830,6 +955,10 @@ select:focus-visible,
   from { opacity: 0; transform: translateY(8px) scale(0.985); }
 }
 
+@keyframes annotation-tools-in {
+  from { opacity: 0; transform: translate(-50%, 5px) scale(0.97); }
+}
+
 @media (max-width: 720px) {
   .landing-page {
     padding: 20px 16px;
@@ -887,6 +1016,10 @@ select:focus-visible,
   .dialog-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .dialog-actions.pre-session {
+    grid-template-columns: 1fr;
   }
 
   .dock-button {

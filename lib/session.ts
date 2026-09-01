@@ -1,3 +1,8 @@
+import {
+  parseDrawingInstruction,
+  type DrawingInstruction,
+  type DrawingStroke,
+} from "./annotations";
 import type { SessionOptions, SharedTrack } from "./options";
 import { RealtimeConnection, RealtimeError } from "./realtime";
 
@@ -24,6 +29,9 @@ type ServerEvent = {
   type: string;
   options?: SessionOptions;
   messages?: ChatMessage[];
+  drawings?: DrawingStroke[];
+  instruction?: DrawingInstruction;
+  senderId?: string;
   tracks?: SharedTrack[];
   track?: SharedTrack;
   viewerCount?: number;
@@ -37,6 +45,8 @@ export type SessionEvent =
   | { type: "options"; options: SessionOptions }
   | { type: "viewer-count"; viewerCount: number }
   | { type: "chat"; message: ChatMessage }
+  | { type: "drawing-snapshot"; strokes: DrawingStroke[] }
+  | { type: "drawing-instruction"; senderId: string; instruction: DrawingInstruction }
   | { type: "remote-stream"; stream: MediaStream | null }
   | { type: "creator-audio"; stream: MediaStream | null }
   | { type: "mic"; muted: boolean }
@@ -193,6 +203,14 @@ export class SessionClient {
     if (value) this.send({ type: "chat", text: value });
   }
 
+  /** Send one normalized vector instruction and render it optimistically. */
+  sendDrawingInstruction(instruction: DrawingInstruction): boolean {
+    if (this.role === "viewer" && !this.options.allowViewerAnnotations) return false;
+    if (!this.send({ type: "annotation", instruction })) return false;
+    this.emit({ type: "drawing-instruction", senderId: this.clientId, instruction });
+    return true;
+  }
+
   /** Creator: apply new settings locally and tell the hub (which fans them out). */
   updateOptions(options: SessionOptions) {
     this.options = options;
@@ -249,10 +267,12 @@ export class SessionClient {
 
   // ---- socket ----------------------------------------------------------
 
-  private send(value: unknown) {
+  private send(value: unknown): boolean {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(value));
+      return true;
     }
+    return false;
   }
 
   private openSocket() {
@@ -357,6 +377,7 @@ export class SessionClient {
       case "welcome":
         if (message.options) this.applyOptions(message.options);
         if (message.messages) message.messages.forEach((chat) => this.deliverChat(chat));
+        this.emit({ type: "drawing-snapshot", strokes: message.drawings ?? [] });
         if (typeof message.viewerCount === "number") {
           this.emit({ type: "viewer-count", viewerCount: message.viewerCount });
         }
@@ -417,9 +438,28 @@ export class SessionClient {
         this.deliverChat(message as unknown as ChatMessage);
         return;
 
+      case "annotation": {
+        const instruction = parseDrawingInstruction(message.instruction);
+        if (!instruction || typeof message.senderId !== "string") return;
+        // Local instructions were already applied before the server echo.
+        if (message.senderId === this.clientId) return;
+        this.emit({ type: "drawing-instruction", senderId: message.senderId, instruction });
+        return;
+      }
+
+      case "drawing-snapshot":
+        this.emit({ type: "drawing-snapshot", strokes: message.drawings ?? [] });
+        return;
+
       case "error":
         if (message.code === "chat-rate-limit") {
           this.emit({ type: "error", message: "Slow down; a few messages every ten seconds." });
+        }
+        if (message.code === "annotation-not-allowed") {
+          this.emit({ type: "error", message: "The presenter has disabled viewer annotations." });
+        }
+        if (message.code === "annotation-rate-limit") {
+          this.emit({ type: "error", message: "Annotation input is arriving too quickly." });
         }
         return;
 

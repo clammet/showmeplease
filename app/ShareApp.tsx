@@ -6,6 +6,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Eraser,
   GripVertical,
   Link2,
   LoaderCircle,
@@ -13,6 +14,10 @@ import {
   Mic,
   MicOff,
   MonitorUp,
+  MousePointer2,
+  Palette,
+  Pencil,
+  PenTool,
   ScreenShare,
   Settings,
   SlidersHorizontal,
@@ -35,6 +40,12 @@ import {
   type SessionOptions,
 } from "@/lib/options";
 import {
+  ANNOTATION_COLORS,
+  applyDrawingInstruction,
+  type DrawingInstruction,
+  type DrawingStroke,
+} from "@/lib/annotations";
+import {
   SessionClient,
   type ChatMessage,
   type Role,
@@ -42,16 +53,47 @@ import {
   type SessionStatus,
 } from "@/lib/session";
 import AccountControls from "./AccountControls";
+import AnnotationLayer, {
+  LASER_CLOCK_INTERVAL_MS,
+  LASER_POINTER_IDLE_DURATION_MS,
+  LASER_TRAIL_HISTORY_MS,
+  type AnnotationTool,
+  type LaserMark,
+} from "./AnnotationLayer";
 
 type AppMode = "landing" | "session";
 
-const STORAGE_KEY = "showmeplease.session-options.v1";
+const STORAGE_KEY = "showmeplease.session-options.v2";
+const LEGACY_STORAGE_KEY = "showmeplease.session-options.v1";
 const CLIENT_ID_KEY = "showmeplease.client-id";
 
 function parseOptions(value: string | null): SessionOptions {
   if (!value) return DEFAULT_OPTIONS;
   try {
     return coerceSessionOptions(JSON.parse(value));
+  } catch {
+    return DEFAULT_OPTIONS;
+  }
+}
+
+function loadSavedOptions(): SessionOptions {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) return parseOptions(saved);
+
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!legacy) return DEFAULT_OPTIONS;
+
+    // The old save flow also persisted live-session permission changes. Keep
+    // the user's capture preferences, but reset those accidentally sticky
+    // permissions during the one-time migration.
+    const migrated = {
+      ...parseOptions(legacy),
+      allowViewerMic: DEFAULT_OPTIONS.allowViewerMic,
+      allowViewerAnnotations: DEFAULT_OPTIONS.allowViewerAnnotations,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    return migrated;
   } catch {
     return DEFAULT_OPTIONS;
   }
@@ -85,7 +127,7 @@ function SettingsDialog({
   options: SessionOptions;
   sessionActive: boolean;
   onClose: () => void;
-  onSave: (options: SessionOptions) => void;
+  onSave: (options: SessionOptions, scope: "session" | "all") => void;
 }) {
   // The parent remounts this dialog (via `key`) each time it opens, so the
   // draft starts from the current options without an effect.
@@ -197,6 +239,21 @@ function SettingsDialog({
 
           <label className="toggle-row">
             <span>
+              <strong>Allow viewer annotations</strong>
+              <small>Show laser and drawing tools to everyone watching the share.</small>
+            </span>
+            <input
+              type="checkbox"
+              aria-label="Allow viewer annotations"
+              checked={draft.allowViewerAnnotations}
+              onChange={(event) =>
+                setDraft({ ...draft, allowViewerAnnotations: event.target.checked })
+              }
+            />
+          </label>
+
+          <label className="toggle-row">
+            <span>
               <strong>Allow viewer microphone</strong>
               <small>Viewers may speak back through their own SFU audio track.</small>
             </span>
@@ -213,22 +270,33 @@ function SettingsDialog({
 
         {sessionActive && (
           <p className="dialog-note">
-            Bitrate and viewer mic access update now. Codec and capture options become the defaults
-            for the next media connection.
+            Bitrate, viewer mic access, and viewer annotations update now. Codec and capture options
+            apply to the next media connection in this session.
           </p>
         )}
 
-        <div className="dialog-actions">
+        <div className={`dialog-actions ${sessionActive ? "" : "pre-session"}`}>
           <button className="button secondary" onClick={onClose}>Cancel</button>
           <button
-            className="button primary"
+            className={sessionActive ? "button primary" : "button secondary"}
             onClick={() => {
-              onSave(draft);
+              onSave(draft, "session");
               onClose();
             }}
           >
-            Save settings
+            Save for this session
           </button>
+          {!sessionActive && (
+            <button
+              className="button primary"
+              onClick={() => {
+                onSave(draft, "all");
+                onClose();
+              }}
+            >
+              Save for all sessions
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -328,6 +396,7 @@ export default function ShareApp() {
   const [role, setRole] = useState<Role>("creator");
   const [status, setStatus] = useState<SessionStatus>("waiting");
   const [options, setOptions] = useState(DEFAULT_OPTIONS);
+  const [savedOptions, setSavedOptions] = useState(DEFAULT_OPTIONS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [joinCode, setJoinCode] = useState("");
   const [sessionCode, setSessionCode] = useState("");
@@ -338,6 +407,11 @@ export default function ShareApp() {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [creatorAudio, setCreatorAudio] = useState<MediaStream | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [drawings, setDrawings] = useState<DrawingStroke[]>([]);
+  const [laserMarks, setLaserMarks] = useState<LaserMark[]>([]);
+  const [annotationOpen, setAnnotationOpen] = useState(false);
+  const [annotationTool, setAnnotationTool] = useState<AnnotationTool>(null);
+  const [annotationColor, setAnnotationColor] = useState<string>(ANNOTATION_COLORS[0]);
   const [chatOpen, setChatOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [micMuted, setMicMuted] = useState(true);
@@ -348,16 +422,20 @@ export default function ShareApp() {
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const mediaStageRef = useRef<HTMLElement>(null);
   const creatorAudioRef = useRef<HTMLAudioElement>(null);
   const clientRef = useRef<SessionClient | null>(null);
   const chatOpenRef = useRef(false);
+  const laserMarkIdRef = useRef(0);
 
   useEffect(() => {
     // Browser-only values read once after hydration; reading them during
     // render would differ from the static export and break hydration.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setClientId(loadClientId());
-    setOptions(parseOptions(localStorage.getItem(STORAGE_KEY)));
+    const storedOptions = loadSavedOptions();
+    setSavedOptions(storedOptions);
+    setOptions(storedOptions);
     setSecureContext(window.isSecureContext);
     const queryCode = normaliseCode(new URLSearchParams(window.location.search).get("join") || "");
     if (queryCode) setJoinCode(queryCode);
@@ -374,6 +452,32 @@ export default function ShareApp() {
   useEffect(() => {
     if (creatorAudioRef.current) creatorAudioRef.current.srcObject = creatorAudio;
   }, [creatorAudio]);
+
+  const hasLaserMarks = laserMarks.length > 0;
+  useEffect(() => {
+    if (!hasLaserMarks) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setLaserMarks((current) => {
+        const latestBySender = new Map<string, LaserMark>();
+        for (const mark of current) {
+          const latest = latestBySender.get(mark.senderId);
+          if (!latest || mark.at > latest.at || (mark.at === latest.at && mark.id > latest.id)) {
+            latestBySender.set(mark.senderId, mark);
+          }
+        }
+        const next = current.filter((mark) => {
+          const latest = latestBySender.get(mark.senderId);
+          const lifetime = latest?.id === mark.id
+            ? LASER_POINTER_IDLE_DURATION_MS
+            : LASER_TRAIL_HISTORY_MS;
+          return now - mark.at < lifetime;
+        });
+        return next.length === current.length ? current : next;
+      });
+    }, LASER_CLOCK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [hasLaserMarks]);
 
   const toggleChat = (open: boolean) => {
     chatOpenRef.current = open;
@@ -397,6 +501,10 @@ export default function ShareApp() {
     setRemoteStream(null);
     setCreatorAudio(null);
     setMessages([]);
+    setDrawings([]);
+    setLaserMarks([]);
+    setAnnotationOpen(false);
+    setAnnotationTool(null);
     setUnread(0);
     chatOpenRef.current = false;
     setChatOpen(false);
@@ -406,8 +514,9 @@ export default function ShareApp() {
     setStatus("waiting");
     setMode("landing");
     setSessionCode("");
+    setOptions(savedOptions);
     window.history.replaceState({}, "", "/");
-  }, []);
+  }, [savedOptions]);
 
   const handleEvent = useCallback(
     (event: SessionEvent) => {
@@ -417,6 +526,10 @@ export default function ShareApp() {
           return;
         case "options":
           setOptions(event.options);
+          if (clientRef.current?.role === "viewer" && !event.options.allowViewerAnnotations) {
+            setAnnotationOpen(false);
+            setAnnotationTool(null);
+          }
           return;
         case "viewer-count":
           setViewerCount(event.viewerCount);
@@ -428,6 +541,26 @@ export default function ShareApp() {
           if (!chatOpenRef.current && event.message.senderId !== clientRef.current?.clientId) {
             setUnread((count) => count + 1);
           }
+          return;
+        case "drawing-snapshot":
+          setDrawings(event.strokes);
+          return;
+        case "drawing-instruction":
+          if (event.instruction.kind === "laser-move") {
+            const nextMark: LaserMark = {
+              id: laserMarkIdRef.current++,
+              senderId: event.senderId,
+              color: event.instruction.color,
+              point: event.instruction.point,
+              at: Date.now(),
+            };
+            setLaserMarks((current) => [...current.slice(-239), nextMark]);
+            return;
+          }
+          if (event.instruction.kind === "clear") setLaserMarks([]);
+          setDrawings((current) =>
+            applyDrawingInstruction(current, event.instruction, event.senderId),
+          );
           return;
         case "remote-stream":
           setRemoteStream(event.stream);
@@ -486,11 +619,18 @@ export default function ShareApp() {
     client.start();
   };
 
-  const saveOptions = (nextOptions: SessionOptions) => {
+  const saveOptions = (nextOptions: SessionOptions, scope: "session" | "all") => {
     setOptions(nextOptions);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(nextOptions));
+    if (scope === "all") {
+      setSavedOptions(nextOptions);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextOptions));
+    }
     clientRef.current?.updateOptions(nextOptions);
   };
+
+  const sendDrawingInstruction = useCallback((instruction: DrawingInstruction) => {
+    return clientRef.current?.sendDrawingInstruction(instruction) ?? false;
+  }, []);
 
   const requestCapture = () => {
     if (!window.isSecureContext) {
@@ -629,6 +769,8 @@ export default function ShareApp() {
 
   const viewerMicAllowed = options.allowViewerMic;
   const terminal = status === "ended" || status === "error";
+  const annotationsAvailable = role === "creator" || options.allowViewerAnnotations;
+  const activeAnnotationTool = terminal || !annotationsAvailable ? null : annotationTool;
 
   const statusCopy =
     role === "creator"
@@ -742,12 +884,26 @@ export default function ShareApp() {
 
   return (
     <main className={`session-page ${chatOpen ? "chat-visible" : ""}`}>
-      <section className="media-stage" aria-label={role === "creator" ? "Share preview" : "Shared screen"}>
+      <section
+        ref={mediaStageRef}
+        className="media-stage"
+        aria-label={role === "creator" ? "Share preview" : "Shared screen"}
+      >
         {role === "creator" ? (
           <video ref={localVideoRef} autoPlay muted playsInline className="share-video" />
         ) : (
           <video ref={remoteVideoRef} autoPlay playsInline className="share-video" />
         )}
+
+        <AnnotationLayer
+          stageRef={mediaStageRef}
+          videoRef={role === "creator" ? localVideoRef : remoteVideoRef}
+          strokes={drawings}
+          laserMarks={laserMarks}
+          activeTool={activeAnnotationTool}
+          color={annotationColor}
+          onInstruction={sendDrawingInstruction}
+        />
 
         {(role === "viewer" ? status !== "live" : terminal) && (
           <div className="stage-state">
@@ -821,6 +977,82 @@ export default function ShareApp() {
           <MessageCircle size={18} />
           {unread > 0 && <span className="unread-badge">{unread > 99 ? "99+" : unread}</span>}
         </button>
+        {annotationsAvailable && (
+          <div className="annotation-controls">
+            <button
+              className={`dock-button ${annotationOpen ? "active" : ""}`}
+              onClick={() => {
+                const nextOpen = !annotationOpen;
+                setAnnotationOpen(nextOpen);
+                if (!nextOpen) setAnnotationTool(null);
+              }}
+              disabled={terminal}
+              title="Toggle annotation tools"
+              aria-label="Toggle annotation tools"
+              aria-expanded={annotationOpen}
+            >
+              <PenTool size={18} />
+            </button>
+            {annotationOpen && (
+              <div className="annotation-tool-shelf" role="toolbar" aria-label="Annotation tools">
+                {annotationTool && (
+                  <div className="annotation-color-row" role="group" aria-label="Annotation color">
+                    {ANNOTATION_COLORS.map((color) => (
+                      <button
+                        key={color}
+                        className={`color-choice ${annotationColor === color ? "selected" : ""}`}
+                        style={{ backgroundColor: color }}
+                        onClick={() => setAnnotationColor(color)}
+                        title={`Use ${color}`}
+                        aria-label={`Use color ${color}`}
+                        aria-pressed={annotationColor === color}
+                      />
+                    ))}
+                    <label className="color-picker-choice" title="Choose a custom color">
+                      <Palette size={16} />
+                      <input
+                        type="color"
+                        value={annotationColor}
+                        onChange={(event) => setAnnotationColor(event.target.value)}
+                        aria-label="Choose a custom annotation color"
+                      />
+                    </label>
+                  </div>
+                )}
+                <button
+                  className={`dock-button ${annotationTool === "laser" ? "active" : ""}`}
+                  onClick={() =>
+                    setAnnotationTool((current) => (current === "laser" ? null : "laser"))
+                  }
+                  title="Laser pointer"
+                  aria-label="Laser pointer"
+                  aria-pressed={annotationTool === "laser"}
+                >
+                  <MousePointer2 size={18} />
+                </button>
+                <button
+                  className={`dock-button ${annotationTool === "pencil" ? "active" : ""}`}
+                  onClick={() =>
+                    setAnnotationTool((current) => (current === "pencil" ? null : "pencil"))
+                  }
+                  title="Pencil"
+                  aria-label="Pencil"
+                  aria-pressed={annotationTool === "pencil"}
+                >
+                  <Pencil size={18} />
+                </button>
+                <button
+                  className="dock-button"
+                  onClick={() => sendDrawingInstruction({ kind: "clear" })}
+                  title="Erase all annotations"
+                  aria-label="Erase all annotations"
+                >
+                  <Eraser size={18} />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
         <button
           className={`dock-button ${!micMuted ? "active" : ""}`}
           onClick={() => void clientRef.current?.toggleMicrophone()}

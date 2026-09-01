@@ -12,6 +12,7 @@ import {
 } from "../server/hub.ts";
 import { RateLimiter } from "../server/rateLimit.ts";
 import { parseSessionOptions } from "../lib/options.ts";
+import { parseDrawingInstruction } from "../lib/annotations.ts";
 
 const OPTIONS = {
   codec: "auto",
@@ -19,6 +20,7 @@ const OPTIONS = {
   frameRate: 30,
   includeSystemAudio: true,
   allowViewerMic: false,
+  allowViewerAnnotations: false,
 };
 
 /** Minimal stand-in for a ws socket: records sent frames, can emit events. */
@@ -77,7 +79,42 @@ test("parseSessionOptions rejects out-of-range and unknown values", () => {
   assert.equal(parseSessionOptions({ ...OPTIONS, maxBitrateKbps: Infinity }), null);
   assert.equal(parseSessionOptions({ ...OPTIONS, maxBitrateKbps: 100 }), null);
   assert.equal(parseSessionOptions({ ...OPTIONS, allowViewerMic: "yes" }), null);
+  assert.equal(parseSessionOptions({ ...OPTIONS, allowViewerAnnotations: "yes" }), null);
   assert.equal(parseSessionOptions(null), null);
+});
+
+test("drawing instructions only accept bounded normalized vector data", () => {
+  assert.deepEqual(
+    parseDrawingInstruction({
+      kind: "stroke-start",
+      strokeId: "stroke_1",
+      color: "#ff4d4f",
+      point: { x: 0.25, y: 1 },
+    }),
+    {
+      kind: "stroke-start",
+      strokeId: "stroke_1",
+      color: "#ff4d4f",
+      point: { x: 0.25, y: 1 },
+    },
+  );
+  assert.equal(
+    parseDrawingInstruction({
+      kind: "stroke-start",
+      strokeId: "stroke_1",
+      color: "red",
+      point: { x: 0.25, y: 0.5 },
+    }),
+    null,
+  );
+  assert.equal(
+    parseDrawingInstruction({
+      kind: "laser-move",
+      color: "#ff4d4f",
+      point: { x: -0.1, y: 0.5 },
+    }),
+    null,
+  );
 });
 
 test("tokens are bound to the client id and role they were minted for", () => {
@@ -187,6 +224,71 @@ test("options updates are validated and stored on the room", () => {
   assert.equal(hub.room(code).options.maxBitrateKbps, 6000);
   creator.receive({ type: "options", options: { ...OPTIONS, maxBitrateKbps: 2500 } });
   assert.equal(hub.room(code).options.maxBitrateKbps, 2500);
+});
+
+test("annotations are host-gated, synchronized as vectors, snapshotted, and clearable", () => {
+  const { hub, code, creator } = hubWithRoom();
+  const viewer = joinViewer(hub, code, "viewer-1");
+  const start = {
+    kind: "stroke-start",
+    strokeId: "stroke-a",
+    color: "#ff4d4f",
+    point: { x: 0.1, y: 0.2 },
+  };
+
+  viewer.socket.receive({ type: "annotation", instruction: start });
+  assert.equal(hub.room(code).drawings.size, 0);
+  assert.equal(viewer.socket.last("error").code, "annotation-not-allowed");
+
+  creator.receive({ type: "annotation", instruction: start });
+  assert.equal(hub.room(code).drawings.size, 1, "presenter always has annotation access");
+  assert.deepEqual(viewer.socket.last("annotation").instruction, start);
+
+  creator.receive({
+    type: "options",
+    options: { ...OPTIONS, allowViewerAnnotations: true },
+  });
+  viewer.socket.receive({
+    type: "annotation",
+    instruction: {
+      kind: "stroke-start",
+      strokeId: "stroke-b",
+      color: "#3b82f6",
+      point: { x: 0.3, y: 0.4 },
+    },
+  });
+  viewer.socket.receive({
+    type: "annotation",
+    instruction: {
+      kind: "stroke-add",
+      strokeId: "stroke-b",
+      points: [{ x: 0.5, y: 0.6 }],
+    },
+  });
+  viewer.socket.receive({
+    type: "annotation",
+    instruction: { kind: "stroke-end", strokeId: "stroke-b" },
+  });
+  assert.deepEqual(hub.room(code).drawings.get("stroke-b").points, [
+    { x: 0.3, y: 0.4 },
+    { x: 0.5, y: 0.6 },
+  ]);
+
+  viewer.socket.receive({
+    type: "annotation",
+    instruction: { kind: "laser-move", color: "#34c759", point: { x: 0.8, y: 0.1 } },
+  });
+  assert.equal(creator.last("annotation").instruction.kind, "laser-move");
+  assert.equal(hub.room(code).drawings.size, 2, "laser trails are transient");
+
+  const lateViewer = joinViewer(hub, code, "viewer-2");
+  assert.equal(lateViewer.socket.last("welcome").drawings.length, 2);
+  assert.equal(lateViewer.socket.last("welcome").drawings[1].complete, true);
+
+  viewer.socket.receive({ type: "annotation", instruction: { kind: "clear" } });
+  assert.equal(hub.room(code).drawings.size, 0);
+  assert.equal(creator.last("annotation").instruction.kind, "clear");
+  assert.equal(lateViewer.socket.last("annotation").instruction.kind, "clear");
 });
 
 test("chat is rate limited per participant", () => {

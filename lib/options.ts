@@ -17,6 +17,7 @@ export type SessionOptions = {
   frameRate: FrameRate;
   includeSystemAudio: boolean;
   allowViewerMic: boolean;
+  allowViewerAnnotations: boolean;
 };
 
 export const DEFAULT_OPTIONS: SessionOptions = {
@@ -25,6 +26,7 @@ export const DEFAULT_OPTIONS: SessionOptions = {
   frameRate: 30,
   includeSystemAudio: true,
   allowViewerMic: false,
+  allowViewerAnnotations: false,
 };
 
 /** Strict validation: returns null unless every field is present and in range. */
@@ -46,12 +48,14 @@ export function parseSessionOptions(value: unknown): SessionOptions | null {
   if (!FRAME_RATES.includes(frameRate as FrameRate)) return null;
   if (typeof candidate.includeSystemAudio !== "boolean") return null;
   if (typeof candidate.allowViewerMic !== "boolean") return null;
+  if (typeof candidate.allowViewerAnnotations !== "boolean") return null;
   return {
     codec: codec as CodecPreference,
     maxBitrateKbps: Math.round(bitrate),
     frameRate: frameRate as FrameRate,
     includeSystemAudio: candidate.includeSystemAudio,
     allowViewerMic: candidate.allowViewerMic,
+    allowViewerAnnotations: candidate.allowViewerAnnotations,
   };
 }
 
@@ -78,6 +82,10 @@ export function coerceSessionOptions(value: unknown): SessionOptions {
       typeof candidate.allowViewerMic === "boolean"
         ? candidate.allowViewerMic
         : DEFAULT_OPTIONS.allowViewerMic,
+    allowViewerAnnotations:
+      typeof candidate.allowViewerAnnotations === "boolean"
+        ? candidate.allowViewerAnnotations
+        : DEFAULT_OPTIONS.allowViewerAnnotations,
   };
 }
 

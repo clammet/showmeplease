@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
 import {
+  MAX_DRAWING_STROKES,
+  MAX_POINTS_PER_STROKE,
+  MAX_TOTAL_DRAWING_POINTS,
+  parseDrawingInstruction,
+  type DrawingInstruction,
+  type DrawingStroke,
+} from "../lib/annotations";
+import {
   parseSessionOptions,
   parseSharedTrack,
   type SessionOptions,
@@ -51,6 +59,9 @@ export type Room = {
   clients: Map<WebSocket, SocketClient>;
   messages: ChatMessage[];
   sharedTracks: SharedTrack[];
+  /** Persistent vector strokes; laser instructions are deliberately transient. */
+  drawings: Map<string, DrawingStroke>;
+  drawingPointCount: number;
   /** Last cumulative RTCPeerConnection counters per client id, kept across socket reconnects. */
   stats: Map<string, ByteCounters>;
   egressBytes: number;
@@ -79,6 +90,7 @@ const STATUS_RECENT_ACTIVITY_MS = 2 * 60_000;
 const SWEEP_INTERVAL_MS = 60_000;
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 const CHAT_LIMIT = { max: 10, windowMs: 10_000 };
+const ANNOTATION_LIMIT = { max: 1800, windowMs: 10_000 };
 
 function createCode() {
   const bytes = new Uint8Array(6);
@@ -93,6 +105,10 @@ export class SessionHub {
   private rooms = new Map<string, Room>();
   private ended: EndedSession[] = [];
   private readonly chatLimiter = new RateLimiter(CHAT_LIMIT.max, CHAT_LIMIT.windowMs);
+  private readonly annotationLimiter = new RateLimiter(
+    ANNOTATION_LIMIT.max,
+    ANNOTATION_LIMIT.windowMs,
+  );
   private readonly timers: NodeJS.Timeout[] = [];
 
   constructor(options: { timers?: boolean } = {}) {
@@ -134,6 +150,8 @@ export class SessionHub {
         clients: new Map(),
         messages: [],
         sharedTracks: [],
+        drawings: new Map(),
+        drawingPointCount: 0,
         stats: new Map(),
         egressBytes: 0,
         ingressBytes: 0,
@@ -317,6 +335,7 @@ export class SessionHub {
       this.pruneViewers(room, now);
     }
     this.chatLimiter.sweep(now);
+    this.annotationLimiter.sweep(now);
   }
 
   /** ws-level liveness: a socket that misses one heartbeat window is terminated. */
@@ -385,6 +404,7 @@ export class SessionHub {
       options: room.options,
       messages: room.messages,
       tracks: room.sharedTracks,
+      drawings: Array.from(room.drawings.values()),
       viewerCount: this.viewerCount(room),
       creatorOnline: this.creatorOnline(room),
     });
@@ -443,6 +463,9 @@ export class SessionHub {
       case "chat":
         this.handleChat(room, client, message);
         return;
+      case "annotation":
+        this.handleAnnotation(room, client, message);
+        return;
       case "tracks-ready":
       case "tracks-added":
         if (participant.role === "creator") this.handleTracks(room, participant, message);
@@ -485,6 +508,115 @@ export class SessionHub {
       room.messages.splice(0, room.messages.length - MAX_MESSAGES);
     }
     this.broadcast(room, chat);
+  }
+
+  private handleAnnotation(room: Room, client: SocketClient, message: Record<string, unknown>) {
+    const { participant } = client;
+    if (participant.role === "viewer" && !room.options.allowViewerAnnotations) {
+      this.send(client.socket, { type: "error", code: "annotation-not-allowed" });
+      return;
+    }
+
+    const instruction = parseDrawingInstruction(message.instruction);
+    if (!instruction) return;
+    if (
+      !this.annotationLimiter.allow(`participant:${room.code}:${participant.token}`) ||
+      !this.annotationLimiter.allow(`room:${room.code}`)
+    ) {
+      this.send(client.socket, { type: "error", code: "annotation-rate-limit" });
+      return;
+    }
+
+    const publish = (accepted: DrawingInstruction) => {
+      this.broadcast(room, {
+        type: "annotation",
+        senderId: participant.clientId,
+        instruction: accepted,
+      });
+    };
+
+    if (instruction.kind === "clear") {
+      room.drawings.clear();
+      room.drawingPointCount = 0;
+      publish(instruction);
+      return;
+    }
+
+    if (instruction.kind === "laser-move") {
+      publish(instruction);
+      return;
+    }
+
+    if (instruction.kind === "stroke-start") {
+      if (room.drawings.has(instruction.strokeId)) {
+        return;
+      }
+      let evicted = false;
+      while (
+        room.drawings.size >= MAX_DRAWING_STROKES ||
+        room.drawingPointCount >= MAX_TOTAL_DRAWING_POINTS
+      ) {
+        const oldest = room.drawings.keys().next().value as string | undefined;
+        if (!oldest) break;
+        const removed = room.drawings.get(oldest);
+        if (removed) room.drawingPointCount -= removed.points.length;
+        room.drawings.delete(oldest);
+        evicted = true;
+      }
+      room.drawings.set(instruction.strokeId, {
+        id: instruction.strokeId,
+        ownerId: participant.clientId,
+        color: instruction.color,
+        points: [instruction.point],
+        complete: false,
+      });
+      room.drawingPointCount += 1;
+      if (evicted) this.broadcastDrawingSnapshot(room);
+      else publish(instruction);
+      return;
+    }
+
+    const stroke = room.drawings.get(instruction.strokeId);
+    if (!stroke || stroke.ownerId !== participant.clientId || stroke.complete) {
+      return;
+    }
+
+    if (instruction.kind === "stroke-add") {
+      let evicted = false;
+      while (
+        room.drawingPointCount + instruction.points.length > MAX_TOTAL_DRAWING_POINTS
+      ) {
+        const removable = Array.from(room.drawings.entries()).find(
+          ([id]) => id !== instruction.strokeId,
+        );
+        if (!removable) break;
+        room.drawings.delete(removable[0]);
+        room.drawingPointCount -= removable[1].points.length;
+        evicted = true;
+      }
+      const available = Math.min(
+        Math.max(0, MAX_POINTS_PER_STROKE - stroke.points.length),
+        Math.max(0, MAX_TOTAL_DRAWING_POINTS - room.drawingPointCount),
+      );
+      const points = instruction.points.slice(0, available);
+      if (!points.length) return;
+      stroke.points.push(...points);
+      room.drawingPointCount += points.length;
+      if (evicted) this.broadcastDrawingSnapshot(room);
+      else publish({ ...instruction, points });
+      return;
+    }
+
+    stroke.complete = true;
+    publish(instruction);
+  }
+
+  private drawingSnapshot(room: Room) {
+    return { type: "drawing-snapshot", drawings: Array.from(room.drawings.values()) };
+  }
+
+  private broadcastDrawingSnapshot(room: Room) {
+    this.broadcast(room, this.drawingSnapshot(room));
   }
 
   /**
