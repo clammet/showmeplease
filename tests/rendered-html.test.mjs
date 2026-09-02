@@ -9,7 +9,8 @@ test("static export renders the functional screen-share entry", async () => {
   assert.match(html, /<title>showmeplease — simple screen sharing<\/title>/i);
   assert.match(html, /Share a screen/);
   assert.match(html, /Create share/);
-  assert.match(html, /ENTER CODE/);
+  assert.match(html, /or join/);
+  assert.match(html, /aria-label="Share ID"/);
 });
 
 test("static export includes the admin dashboard and auth callback routes", async () => {

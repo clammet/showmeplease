@@ -120,6 +120,16 @@ function normaliseCode(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
 }
 
+// A dead or misbehaving backend answers with an empty or HTML body; treat that
+// as "no payload" so the caller falls through to its own friendly message.
+async function readJsonBody<T extends object>(response: Response): Promise<Partial<T>> {
+  try {
+    return (await response.json()) as Partial<T>;
+  } catch {
+    return {};
+  }
+}
+
 // Browser capability never changes during a page load, so the store has no
 // updates to subscribe to; the server snapshot is null until hydration.
 const subscribeNever = () => () => {};
@@ -419,6 +429,7 @@ export default function ShareApp() {
   const [savedOptions, setSavedOptions] = useState(DEFAULT_OPTIONS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [joinCode, setJoinCode] = useState("");
+  const [joinFieldArmed, setJoinFieldArmed] = useState(false);
   const [sessionCode, setSessionCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -736,11 +747,7 @@ export default function ShareApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ options, clientId }),
       });
-      const payload = (await response.json()) as {
-        code?: string;
-        token?: string;
-        error?: string;
-      };
+      const payload = await readJsonBody<{ code: string; token: string; error: string }>(response);
       if (!response.ok || !payload.code || !payload.token) {
         throw new Error(payload.error || "Could not create the share");
       }
@@ -754,8 +761,7 @@ export default function ShareApp() {
     }
   };
 
-  const joinShare = async (event?: FormEvent) => {
-    event?.preventDefault();
+  const joinShare = async () => {
     const code = normaliseCode(joinCode);
     if (!clientId || code.length !== 6 || busy) {
       if (code.length !== 6) setError("Enter the 6-character share code");
@@ -769,11 +775,9 @@ export default function ShareApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ clientId }),
       });
-      const payload = (await response.json()) as {
-        token?: string;
-        options?: SessionOptions;
-        error?: string;
-      };
+      const payload = await readJsonBody<{ token: string; options: SessionOptions; error: string }>(
+        response,
+      );
       if (!response.ok || !payload.token || !payload.options) {
         throw new Error(payload.error || "That share is not available");
       }
@@ -898,32 +902,50 @@ export default function ShareApp() {
 
           <div className="or-divider"><span>or join</span></div>
 
-          <form className="join-row" onSubmit={joinShare} autoComplete="off">
-            <input
-              className="code-input"
-              type="text"
-              name="share-code"
-              inputMode="text"
-              data-1p-ignore
-              data-lpignore="true"
-              data-bwignore
-              data-form-type="other"
-              value={joinCode}
-              onChange={(event) => {
-                setJoinCode(normaliseCode(event.target.value));
-                setError("");
-              }}
-              placeholder="ENTER CODE"
-              aria-label="Share code"
-              autoCapitalize="characters"
-              autoComplete="off"
-              spellCheck={false}
-              maxLength={6}
-            />
-            <button className="button secondary join-button" disabled={busy || joinCode.length !== 6}>
+          {/* Not a <form>, and no name, placeholder, or maxLength: Apple
+              Passwords ignores autocomplete="off" and prompts on load for any
+              short single-field form that mentions a code. The hint text is
+              drawn by CSS, and the field stays read-only until touched so
+              autofill scans skip it. Enter still joins via onKeyDown. */}
+          <div className="join-row">
+            <span className={`join-field${joinCode ? "" : " is-empty"}`}>
+              <input
+                className="join-input"
+                type="text"
+                value={joinCode}
+                readOnly={!joinFieldArmed}
+                onPointerDown={() => setJoinFieldArmed(true)}
+                onFocus={() => setJoinFieldArmed(true)}
+                onChange={(event) => {
+                  setJoinCode(normaliseCode(event.target.value));
+                  setError("");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void joinShare();
+                  }
+                }}
+                aria-label="Share ID"
+                autoCapitalize="characters"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                data-form-type="other"
+              />
+            </span>
+            <button
+              type="button"
+              className="button secondary join-button"
+              disabled={busy || joinCode.length !== 6}
+              onClick={() => void joinShare()}
+            >
               Join <ChevronRight size={17} />
             </button>
-          </form>
+          </div>
 
           {!secureContext && (
             <div className="inline-error" role="alert">

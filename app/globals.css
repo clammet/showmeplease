@@ -247,7 +247,7 @@ select:focus-visible,
   text-transform: uppercase;
 }
 
-.code-input,
+.join-input,
 .chat-composer input,
 .field-label select {
   color: var(--ink);
@@ -255,7 +255,13 @@ select:focus-visible,
   background: white;
 }
 
-.code-input {
+.join-field {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.join-input {
   width: 100%;
   min-width: 0;
   height: 46px;
@@ -268,13 +274,22 @@ select:focus-visible,
   text-transform: uppercase;
 }
 
-.code-input::placeholder {
+/* Placeholder stand-in, kept out of the input's attributes on purpose. */
+.join-field.is-empty::before {
+  content: "ENTER CODE";
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
   color: #a3aaa6;
+  font-family: var(--font-geist-mono), monospace;
   font-size: 13px;
+  font-weight: 700;
   letter-spacing: 0.08em;
 }
 
-.code-input:focus {
+.join-input:focus {
   border-color: #83a792;
 }
 
