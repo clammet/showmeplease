@@ -22,6 +22,8 @@ import {
   Settings,
   SlidersHorizontal,
   Users,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import {
@@ -31,7 +33,9 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
+import { getSourceAudioSupport, type SourceAudioSupport } from "@/lib/browserAudio";
 import {
   coerceSessionOptions,
   DEFAULT_OPTIONS,
@@ -116,6 +120,11 @@ function normaliseCode(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
 }
 
+// Browser capability never changes during a page load, so the store has no
+// updates to subscribe to; the server snapshot is null until hydration.
+const subscribeNever = () => () => {};
+const getServerAudioSupport = (): SourceAudioSupport | null => null;
+
 function SettingsDialog({
   open,
   options,
@@ -132,6 +141,11 @@ function SettingsDialog({
   // The parent remounts this dialog (via `key`) each time it opens, so the
   // draft starts from the current options without an effect.
   const [draft, setDraft] = useState(options);
+  const audioSupport = useSyncExternalStore(
+    subscribeNever,
+    getSourceAudioSupport,
+    getServerAudioSupport,
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -224,12 +238,18 @@ function SettingsDialog({
 
           <label className="toggle-row">
             <span>
-              <strong>Include system audio</strong>
-              <small>Offer tab or computer audio in the browser share picker.</small>
+              <strong>Include source audio</strong>
+              <small>Ask the browser for the audio of the tab, window, or screen you pick.</small>
+              {audioSupport && (
+                <small className={`support-note ${audioSupport.level}`} role="note">
+                  {audioSupport.level === "none" ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                  {audioSupport.summary}
+                </small>
+              )}
             </span>
             <input
               type="checkbox"
-              aria-label="Include system audio"
+              aria-label="Include source audio"
               checked={draft.includeSystemAudio}
               onChange={(event) =>
                 setDraft({ ...draft, includeSystemAudio: event.target.checked })
@@ -402,7 +422,9 @@ export default function ShareApp() {
   const [sessionCode, setSessionCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [viewerCount, setViewerCount] = useState(0);
+  const [shareMuted, setShareMuted] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [creatorAudio, setCreatorAudio] = useState<MediaStream | null>(null);
@@ -448,6 +470,10 @@ export default function ShareApp() {
   useEffect(() => {
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
   }, [remoteStream]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current) remoteVideoRef.current.muted = shareMuted;
+  }, [shareMuted, remoteStream]);
 
   useEffect(() => {
     if (creatorAudioRef.current) creatorAudioRef.current.srcObject = creatorAudio;
@@ -511,6 +537,8 @@ export default function ShareApp() {
     setMicMuted(true);
     setViewerCount(0);
     setError("");
+    setNotice("");
+    setShareMuted(false);
     setStatus("waiting");
     setMode("landing");
     setSessionCode("");
@@ -639,10 +667,33 @@ export default function ShareApp() {
     if (!navigator.mediaDevices?.getDisplayMedia) {
       throw new Error("Screen sharing is not supported in this browser");
     }
-    return navigator.mediaDevices.getDisplayMedia({
+    // systemAudio and windowAudio are Chrome hints (Chrome 105 and 141) that
+    // make the picker offer an audio switch for screens and windows, not just
+    // tabs. Other browsers ignore them. Processing is off so music and app
+    // sound reach viewers unaltered.
+    const request: DisplayMediaStreamOptions & {
+      systemAudio?: "include" | "exclude";
+      windowAudio?: "system" | "window" | "exclude";
+    } = {
       video: { frameRate: { ideal: options.frameRate, max: options.frameRate } },
-      audio: options.includeSystemAudio,
-    });
+      audio: options.includeSystemAudio
+        ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        : false,
+    };
+    if (options.includeSystemAudio) {
+      request.systemAudio = "include";
+      request.windowAudio = "system";
+    }
+    return navigator.mediaDevices.getDisplayMedia(request);
+  };
+
+  /** Tell the presenter when they asked for audio but the browser gave none. */
+  const reportCaptureAudio = (capture: MediaStream) => {
+    if (!options.includeSystemAudio || capture.getAudioTracks().length) {
+      setNotice("");
+      return;
+    }
+    setNotice(getSourceAudioSupport().captureHint);
   };
 
   const changeSource = async () => {
@@ -655,6 +706,7 @@ export default function ShareApp() {
       capture = await requestCapture();
       await client.replaceCapture(capture);
       setLocalStream(capture);
+      reportCaptureAudio(capture);
     } catch (changeError) {
       capture?.getTracks().forEach((track) => track.stop());
       // The user cancelling the picker is not an error worth surfacing.
@@ -689,6 +741,7 @@ export default function ShareApp() {
         throw new Error(payload.error || "Could not create the share");
       }
       startSession("creator", payload.code, payload.token, options, capture);
+      reportCaptureAudio(capture);
     } catch (createError) {
       capture?.getTracks().forEach((track) => track.stop());
       setError(createError instanceof Error ? createError.message : "Could not create the share");
@@ -768,6 +821,7 @@ export default function ShareApp() {
   };
 
   const viewerMicAllowed = options.allowViewerMic;
+  const captureHasAudio = (localStream?.getAudioTracks().length ?? 0) > 0;
   const terminal = status === "ended" || status === "error";
   const annotationsAvailable = role === "creator" || options.allowViewerAnnotations;
   const activeAnnotationTool = terminal || !annotationsAvailable ? null : annotationTool;
@@ -936,6 +990,13 @@ export default function ShareApp() {
           <div className="preview-label">
             <span className={`status-dot ${status}`} />
             {statusCopy}
+            <span
+              className={`audio-flag ${captureHasAudio ? "on" : ""}`}
+              title={captureHasAudio ? "Sending source audio" : "No source audio in this capture"}
+              aria-label={captureHasAudio ? "Sending source audio" : "No source audio in this capture"}
+            >
+              {captureHasAudio ? <Volume2 size={13} /> : <VolumeX size={13} />}
+            </span>
           </div>
         )}
       </section>
@@ -1053,6 +1114,18 @@ export default function ShareApp() {
             )}
           </div>
         )}
+        {role === "viewer" && (
+          <button
+            className="dock-button"
+            onClick={() => setShareMuted((muted) => !muted)}
+            disabled={terminal}
+            title={shareMuted ? "Unmute the share" : "Mute the share"}
+            aria-label={shareMuted ? "Unmute the share" : "Mute the share"}
+            aria-pressed={shareMuted}
+          >
+            {shareMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+          </button>
+        )}
         <button
           className={`dock-button ${!micMuted ? "active" : ""}`}
           onClick={() => void clientRef.current?.toggleMicrophone()}
@@ -1099,6 +1172,14 @@ export default function ShareApp() {
           <CircleAlert size={16} />
           <span>{error}</span>
           <button onClick={() => setError("")} aria-label="Dismiss error"><X size={15} /></button>
+        </div>
+      )}
+
+      {notice && !error && !terminal && (
+        <div className="session-error session-notice" role="status">
+          <VolumeX size={16} />
+          <span>{notice}</span>
+          <button onClick={() => setNotice("")} aria-label="Dismiss notice"><X size={15} /></button>
         </div>
       )}
 

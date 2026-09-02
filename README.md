@@ -8,8 +8,10 @@ WebRTC, the Cloudflare Realtime SFU, Convex, and Lucide icons.
 - Creates short, shareable session codes.
 - Captures the presenter screen locally for an immediate preview.
 - Delays publishing media to Cloudflare Realtime until a viewer is waiting.
-- Relays the screen, system audio, presenter microphone, and permitted viewer
-  microphones as separate SFU tracks.
+- Relays the screen, source audio, presenter microphone, and permitted viewer
+  microphones as separate SFU tracks. Source audio depends on the browser:
+  Chrome offers it for tabs everywhere, and for windows and screens on
+  Windows, ChromeOS, and macOS 14.2 or newer (Chrome 141 or newer).
 - Keeps presence and the last 100 chat messages in a per-session in-memory
   WebSocket hub.
 - Optional Google sign-in (and anonymous identities) via Convex and
