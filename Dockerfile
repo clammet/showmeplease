@@ -14,6 +14,12 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
 
 COPY . .
+
+# Identifies the running build on the admin dashboard, so it is fixed at build
+# time rather than container startup. CI passes the commit it builds from;
+# a plain `docker build` leaves it empty and the dashboard says so.
+ARG GIT_COMMIT=
+RUN printf 'export const GIT_COMMIT = "%s";\n' "${GIT_COMMIT}" > lib/buildInfo.ts
 RUN pnpm build
 
 FROM node:22.19.0-alpine@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9 AS runtime

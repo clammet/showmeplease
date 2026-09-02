@@ -4,17 +4,9 @@ import { components } from "./_generated/api.js";
 import { mutation, query } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
+import { isAdminEmail } from "./access.js";
 
 const googly = new GooglyAuth(components.googlyAuth);
-
-function isAdminEmail(email: string | undefined): boolean {
-  if (!email) return false;
-  return (process.env.ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean)
-    .includes(email.toLowerCase());
-}
 
 async function profileByIdentityId(
   ctx: QueryCtx,

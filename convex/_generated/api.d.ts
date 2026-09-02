@@ -8,7 +8,10 @@
  * @module
  */
 
+import type * as access from "../access.js";
+import type * as buildInfo from "../buildInfo.js";
 import type * as http from "../http.js";
+import type * as system from "../system.js";
 import type * as users from "../users.js";
 
 import type {
@@ -18,7 +21,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  access: typeof access;
+  buildInfo: typeof buildInfo;
   http: typeof http;
+  system: typeof system;
   users: typeof users;
 }>;
 

@@ -77,6 +77,11 @@ jobs:
           pnpm exec convex env set SITE_URL "$SITE_URL"
           pnpm exec convex env set ADMIN_EMAILS "$ADMIN_EMAILS"
 
+      # The deployed functions report this commit through system.deploymentStatus
+      # so the admin dashboard can compare it against the web and backend builds.
+      - name: Stamp deployed commit
+        run: printf 'export const GIT_COMMIT = "%s";\n' "${GITHUB_SHA}" > convex/buildInfo.ts
+
       - name: Deploy Convex functions
         env:
           CONVEX_SELF_HOSTED_URL: ${{ secrets.CONVEX_SELF_HOSTED_URL }}

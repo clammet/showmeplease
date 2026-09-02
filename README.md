@@ -124,6 +124,11 @@ Viewers connect to the Cloudflare SFU with STUN only unless `TURN_KEY_ID` and
 `TURN_KEY_API_TOKEN` (a Cloudflare Realtime TURN key) are set, in which case
 the backend hands out short-lived TURN credentials at `/api/realtime/ice`.
 
+The build takes a `GIT_COMMIT` argument that the admin dashboard shows as the
+running version of the web bundle and backend. CI passes the commit it builds
+from, and `pnpm image:build` passes `git rev-parse HEAD`; a plain
+`docker build` leaves it unset and the dashboard reports a development build.
+
 There is also a compose file in `deploy/docker-compose.yml`. The container
 exposes port `8080`, `/healthz` for readiness/liveness, and an unauthenticated
 `/api/status` returning aggregate counts (`sessions`, `activeSessions`,
@@ -227,6 +232,11 @@ uses the same allowlist to show the Admin link). It shows:
   Analytics:Read)
 - recently ended sessions and an "End" action that terminates a session for
   everyone
+- a deployment card with the commit each component runs: the web bundle
+  serving the page, the Node backend behind `/api`, and the deployed Convex
+  functions. It warns when they differ, which happens while a deploy is
+  still rolling out or when an external web server is serving a stale copy of
+  the static export
 
 Client-reported byte counters are a close reconstruction of SFU egress;
 Cloudflare's own metering remains authoritative for billing.

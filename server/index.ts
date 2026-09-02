@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
+import { GIT_COMMIT } from "../lib/buildInfo";
 import { CLIENT_ID_PATTERN, parseSessionOptions } from "../lib/options";
 import { checkAdmin, insecureAdminEnabled } from "./adminAuth";
 import { loadEnvFiles } from "./env";
@@ -161,6 +162,7 @@ const server = createServer(async (request, response) => {
         sendJson(response, 200, {
           now,
           startedAt: hub.startedAt,
+          backendCommit: GIT_COMMIT || null,
           billingCycleDay,
           billingPeriodStart: billingPeriod.start,
           billingPeriodEnd: billingPeriod.end,
@@ -284,6 +286,7 @@ server.listen(PORT, HOST, () => {
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : PORT;
   console.log(`showmeplease backend listening on http://${HOST}:${port}`);
+  console.log(`  build:           ${GIT_COMMIT || "development (unstamped)"}`);
   console.log(`  static frontend: ${statics.available() ? staticRoot : "not built (API only)"}`);
   console.log(`  realtime proxy:  ${process.env.REALTIME_APP_ID ? "configured" : "NOT CONFIGURED"}`);
   console.log(`  turn:            ${process.env.TURN_KEY_ID ? "configured" : "STUN only"}`);

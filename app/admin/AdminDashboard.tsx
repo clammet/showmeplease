@@ -6,14 +6,20 @@ import {
   Activity,
   CircleAlert,
   Cloud,
+  GitCommitHorizontal,
   LoaderCircle,
   MonitorUp,
   Users,
   X,
 } from "lucide-react";
+import { useConvexAuth, useQuery } from "convex/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useOptionalAuth, type GooglyAuthClient } from "../providers";
+import { api } from "@/convex/_generated/api";
+import { GIT_COMMIT } from "@/lib/buildInfo";
 import type { SessionOptions } from "@/lib/realtime";
+
+const REPOSITORY_URL = "https://github.com/clammet/showmeplease";
 
 type MinuteBucket = { minute: number; egressBytes: number; ingressBytes: number };
 type DailyBucket = { date: string; egressBytes: number };
@@ -21,6 +27,7 @@ type DailyBucket = { date: string; egressBytes: number };
 type Overview = {
   now: number;
   startedAt: number;
+  backendCommit: string | null;
   billingCycleDay: number;
   billingPeriodStart: number;
   billingPeriodEnd: number;
@@ -58,6 +65,17 @@ type Overview = {
     error: string | null;
   };
 };
+
+/**
+ * What the Convex deployment reports about itself. "unconfigured" when the
+ * backend has no Convex settings, "loading" until the query answers,
+ * "rejected" when Convex does not recognise this sign-in as an admin.
+ */
+type ConvexBuild =
+  | { phase: "unconfigured" }
+  | { phase: "loading" }
+  | { phase: "rejected" }
+  | { phase: "ready"; commit: string | null };
 
 type FetchState =
   | { phase: "loading" }
@@ -120,6 +138,108 @@ function billingPeriodLabel(start: number, end: number): string {
     timeZone: "UTC",
   });
   return `${formatter.format(start)} – ${formatter.format(end)}`;
+}
+
+function CommitLink({ commit }: { commit: string }) {
+  return (
+    <a
+      className="admin-code"
+      href={`${REPOSITORY_URL}/commit/${commit}`}
+      target="_blank"
+      rel="noreferrer"
+      title={commit}
+    >
+      {commit.slice(0, 7)}
+    </a>
+  );
+}
+
+type DeploymentRow = {
+  label: string;
+  commit: string | null;
+  status: string;
+  alert: boolean;
+};
+
+/**
+ * Which commit each component runs. The web bundle and backend are stamped by
+ * the Docker build, the Convex functions by the deploy workflow; all three
+ * should match once a deploy has finished rolling out.
+ */
+function DeploymentCard({
+  backendCommit,
+  convex,
+}: {
+  backendCommit: string | null;
+  convex: ConvexBuild;
+}) {
+  const webCommit = GIT_COMMIT || null;
+  const convexRow: DeploymentRow =
+    convex.phase === "ready"
+      ? {
+          label: "Convex functions",
+          commit: convex.commit,
+          status: "Deployed functions",
+          alert: false,
+        }
+      : {
+          label: "Convex functions",
+          commit: null,
+          status:
+            convex.phase === "unconfigured"
+              ? "Convex is not configured"
+              : convex.phase === "loading"
+                ? "Loading…"
+                : "Convex did not accept this sign-in as an admin",
+          alert: convex.phase === "rejected",
+        };
+  const rows: DeploymentRow[] = [
+    { label: "Web bundle", commit: webCommit, status: "This page", alert: false },
+    { label: "Backend", commit: backendCommit, status: "Serving /api", alert: false },
+    convexRow,
+  ];
+  const distinctCommits = new Set(
+    rows.map((row) => row.commit).filter((commit): commit is string => commit !== null),
+  );
+
+  return (
+    <section className="admin-card">
+      <h2>
+        <GitCommitHorizontal size={15} /> Deployment
+      </h2>
+      {distinctCommits.size > 1 && (
+        <p className="admin-mismatch" role="status">
+          Components are running different commits. A deploy may still be rolling
+          out; if this persists, check the image updater and the Convex deploy
+          workflow.
+        </p>
+      )}
+      <table className="admin-table">
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Commit</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.label}>
+              <td>{row.label}</td>
+              <td>
+                {row.commit ? (
+                  <CommitLink commit={row.commit} />
+                ) : (
+                  <span className="admin-muted">development build</span>
+                )}
+              </td>
+              <td className={row.alert ? "admin-alert" : undefined}>{row.status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
 }
 
 function StatTile({
@@ -397,9 +517,11 @@ function CloudflareChart({
 
 function Dashboard({
   token,
+  convex,
   onUnauthorized,
 }: {
   token: string | null;
+  convex: ConvexBuild;
   onUnauthorized?: () => void;
 }) {
   const [state, setState] = useState<FetchState>({ phase: "loading" });
@@ -608,6 +730,8 @@ function Dashboard({
         </section>
       )}
 
+      <DeploymentCard backendCommit={overview.backendCommit} convex={convex} />
+
       <p className="admin-muted admin-footer">
         Backend up {formatDuration(overview.now - overview.startedAt)}. Egress is
         reconstructed from client WebRTC receive counters; Cloudflare&apos;s own
@@ -619,6 +743,16 @@ function Dashboard({
 
 function AuthedDashboard({ client }: { client: GooglyAuthClient }) {
   const { isLoading, isAuthenticated, token, signIn, signOut } = client.useGoogleAuth();
+  // Convex learns about the Google token a moment after the client does;
+  // hold the query until then so it is not issued anonymously and refused.
+  const { isAuthenticated: convexAuthenticated } = useConvexAuth();
+  const deployment = useQuery(api.system.deploymentStatus, convexAuthenticated ? {} : "skip");
+  const convex: ConvexBuild =
+    deployment === undefined
+      ? { phase: "loading" }
+      : deployment === null
+        ? { phase: "rejected" }
+        : { phase: "ready", commit: deployment.commit };
   const signInStarted = useRef(false);
   const [rejected, setRejected] = useState(false);
   const startSignIn = useCallback(() => {
@@ -662,7 +796,7 @@ function AuthedDashboard({ client }: { client: GooglyAuthClient }) {
       </div>
     );
   }
-  return <Dashboard token={token} onUnauthorized={startSignIn} />;
+  return <Dashboard token={token} convex={convex} onUnauthorized={startSignIn} />;
 }
 
 export default function AdminDashboard() {
@@ -686,7 +820,7 @@ export default function AdminDashboard() {
       ) : status === "disabled" || !client ? (
         // No Convex auth configured; the backend may still allow access via
         // ADMIN_ALLOW_INSECURE=1 in local development.
-        <Dashboard token={null} />
+        <Dashboard token={null} convex={{ phase: "unconfigured" }} />
       ) : (
         <AuthedDashboard client={client} />
       )}

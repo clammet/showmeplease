@@ -205,6 +205,8 @@ test("backend serves the app and runs the full session lifecycle", async (t) => 
   assert.equal(overview.series.length, 96);
   assert.equal(overview.cloudflare.egressBytesBillingPeriod, null);
   assert.equal(overview.cloudflare.freeTierBytes, 1_000_000_000_000);
+  // A source build carries no commit stamp; only the Docker build writes one.
+  assert.equal(overview.backendCommit, null);
 
   // Admin can terminate the session; clients get creator-end, a terminal
   // close code, and the room is retired.
