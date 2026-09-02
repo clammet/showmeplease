@@ -449,6 +449,7 @@ export default function ShareApp() {
   const clientRef = useRef<SessionClient | null>(null);
   const chatOpenRef = useRef(false);
   const laserMarkIdRef = useRef(0);
+  const autoJoinRef = useRef(false);
 
   useEffect(() => {
     // Browser-only values read once after hydration; reading them during
@@ -460,7 +461,10 @@ export default function ShareApp() {
     setOptions(storedOptions);
     setSecureContext(window.isSecureContext);
     const queryCode = normaliseCode(new URLSearchParams(window.location.search).get("join") || "");
-    if (queryCode) setJoinCode(queryCode);
+    if (queryCode) {
+      setJoinCode(queryCode);
+      autoJoinRef.current = queryCode.length === 6;
+    }
   }, []);
 
   useEffect(() => {
@@ -781,6 +785,15 @@ export default function ShareApp() {
     }
   };
 
+  // A join link should drop the visitor straight into the share; wait for
+  // the client id and code to land after hydration, then join once.
+  useEffect(() => {
+    if (!autoJoinRef.current || !clientId || joinCode.length !== 6) return;
+    autoJoinRef.current = false;
+    void joinShare();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, joinCode]);
+
   const copyShareLink = async () => {
     const link = `${window.location.origin}/?join=${sessionCode}`;
     try {
@@ -885,9 +898,16 @@ export default function ShareApp() {
 
           <div className="or-divider"><span>or join</span></div>
 
-          <form className="join-row" onSubmit={joinShare}>
+          <form className="join-row" onSubmit={joinShare} autoComplete="off">
             <input
               className="code-input"
+              type="text"
+              name="share-code"
+              inputMode="text"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
+              data-form-type="other"
               value={joinCode}
               onChange={(event) => {
                 setJoinCode(normaliseCode(event.target.value));
