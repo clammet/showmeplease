@@ -31,6 +31,7 @@ import {
   PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -456,11 +457,54 @@ export default function ShareApp() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const mediaStageRef = useRef<HTMLElement>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
+  const dockDragRef = useRef<{ pointerId: number; x: number; y: number; dockX: number; dockY: number } | null>(null);
   const creatorAudioRef = useRef<HTMLAudioElement>(null);
   const clientRef = useRef<SessionClient | null>(null);
   const chatOpenRef = useRef(false);
   const laserMarkIdRef = useRef(0);
   const autoJoinRef = useRef(false);
+
+  const getDockPositionConstraint = useCallback(() => {
+    const dock = dockRef.current;
+    if (!dock) return (position: { x: number; y: number }) => position;
+
+    // The visual viewport also changes when browser chrome or a keyboard opens.
+    const viewport = window.visualViewport;
+    const left = (viewport?.offsetLeft ?? 0) + 8;
+    const top = (viewport?.offsetTop ?? 0) + 8;
+    const width = viewport?.width ?? window.innerWidth;
+    const height = viewport?.height ?? window.innerHeight;
+    dock.style.maxWidth = `${Math.max(0, width - 16)}px`;
+    const bounds = dock.getBoundingClientRect();
+    return (position: { x: number; y: number }) => {
+      const x = Math.max(left, Math.min(position.x, left + width - 16 - bounds.width));
+      const y = Math.max(top, Math.min(position.y, top + height - 16 - bounds.height));
+      return x === position.x && y === position.y ? position : { x, y };
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    if (mode !== "session" || !dock) return;
+
+    const update = () => setDockPosition(getDockPositionConstraint());
+    // Measure after the session controls mount, before they are painted.
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(dock);
+    const viewport = window.visualViewport;
+    window.addEventListener("resize", update);
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      dockDragRef.current = null;
+    };
+  }, [mode, getDockPositionConstraint]);
 
   useEffect(() => {
     // Browser-only values read once after hydration; reading them during
@@ -810,31 +854,25 @@ export default function ShareApp() {
   };
 
   const startDockDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const origin = {
-      pointerX: event.clientX,
-      pointerY: event.clientY,
-      dockX: dockPosition.x,
-      dockY: dockPosition.y,
+    if (event.button !== 0 || !dockRef.current) return;
+    const bounds = dockRef.current.getBoundingClientRect();
+    dockDragRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      dockX: bounds.left,
+      dockY: bounds.top,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-    const move = (moveEvent: PointerEvent) => {
-      const width = 330;
-      const x = Math.min(
-        window.innerWidth - Math.min(width, window.innerWidth - 16),
-        Math.max(8, origin.dockX + moveEvent.clientX - origin.pointerX),
-      );
-      const y = Math.min(
-        window.innerHeight - 58,
-        Math.max(8, origin.dockY + moveEvent.clientY - origin.pointerY),
-      );
-      setDockPosition({ x, y });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+  };
+
+  const moveDock = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const origin = dockDragRef.current;
+    if (!origin || event.pointerId !== origin.pointerId) return;
+    setDockPosition(getDockPositionConstraint()({
+      x: origin.dockX + event.clientX - origin.x,
+      y: origin.dockY + event.clientY - origin.y,
+    }));
   };
 
   const viewerMicAllowed = options.allowViewerMic;
@@ -1046,6 +1084,7 @@ export default function ShareApp() {
       <audio ref={creatorAudioRef} autoPlay className="visually-hidden" />
 
       <div
+        ref={dockRef}
         className="control-dock"
         style={{ left: dockPosition.x, top: dockPosition.y }}
         aria-label="Session controls"
@@ -1053,6 +1092,10 @@ export default function ShareApp() {
         <div
           className="dock-grip"
           onPointerDown={startDockDrag}
+          onPointerMove={moveDock}
+          onPointerUp={() => { dockDragRef.current = null; }}
+          onPointerCancel={() => { dockDragRef.current = null; }}
+          onLostPointerCapture={() => { dockDragRef.current = null; }}
           role="button"
           tabIndex={0}
           aria-label="Move controls"

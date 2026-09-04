@@ -651,8 +651,11 @@ select:focus-visible,
 .control-dock {
   position: fixed;
   z-index: 30;
-  height: 54px;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  min-height: 54px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 3px;
   padding: 5px;
@@ -664,6 +667,10 @@ select:focus-visible,
   backdrop-filter: blur(16px);
   user-select: none;
   touch-action: none;
+}
+
+.control-dock > * {
+  flex-shrink: 0;
 }
 
 .dock-grip {
@@ -1035,10 +1042,6 @@ select:focus-visible,
 
   .chat-pane {
     width: min(100%, 380px);
-  }
-
-  .control-dock {
-    max-width: calc(100vw - 16px);
   }
 
   .dock-status {
