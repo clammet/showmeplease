@@ -734,6 +734,30 @@ select:focus-visible,
   background: rgba(255, 255, 255, 0.09);
 }
 
+.microphone-level-icon {
+  --microphone-level: 0%;
+  position: relative;
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.microphone-icon-base,
+.microphone-level-fill,
+.microphone-level-fill svg {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+}
+
+.microphone-level-fill {
+  width: 18px;
+  height: var(--microphone-level);
+  overflow: hidden;
+  color: #58df8b;
+  transition: height 55ms linear;
+}
+
 .dock-button.danger:hover {
   color: #ffb0a5;
   background: rgba(190, 69, 53, 0.16);

@@ -29,6 +29,7 @@ import {
 import {
   FormEvent,
   PointerEvent as ReactPointerEvent,
+  type CSSProperties,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -135,6 +136,82 @@ async function readJsonBody<T extends object>(response: Response): Promise<Parti
 // updates to subscribe to; the server snapshot is null until hydration.
 const subscribeNever = () => () => {};
 const getServerAudioSupport = (): SourceAudioSupport | null => null;
+
+const SILENCE_FLOOR_DB = -55;
+const LOUD_INPUT_DB = -5;
+
+function MicrophoneLevelIcon({
+  stream,
+  muted,
+}: {
+  stream: MediaStream | null;
+  muted: boolean;
+}) {
+  const iconRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const icon = iconRef.current;
+    if (!icon || !stream || muted) {
+      icon?.style.setProperty("--microphone-level", "0%");
+      return;
+    }
+
+    const context = new AudioContext();
+    const analyser = context.createAnalyser();
+    const source = context.createMediaStreamSource(stream);
+    let animationFrame = 0;
+    let displayedLevel = 0;
+
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.72;
+    const samples = new Float32Array(analyser.fftSize);
+    source.connect(analyser);
+    void context.resume();
+
+    const measure = () => {
+      analyser.getFloatTimeDomainData(samples);
+      const sumOfSquares = samples.reduce((sum, sample) => sum + sample * sample, 0);
+      const rms = Math.sqrt(sumOfSquares / samples.length);
+      const decibels = rms > 0 ? 20 * Math.log10(rms) : SILENCE_FLOOR_DB;
+      const measuredLevel = Math.min(
+        1,
+        Math.max(0, (decibels - SILENCE_FLOOR_DB) / (LOUD_INPUT_DB - SILENCE_FLOOR_DB)),
+      );
+
+      // Rise quickly so speech is obvious, then fall gently to avoid flicker.
+      displayedLevel = measuredLevel > displayedLevel
+        ? measuredLevel
+        : Math.max(measuredLevel, displayedLevel * 0.86);
+      icon.style.setProperty("--microphone-level", `${Math.round(displayedLevel * 100)}%`);
+      animationFrame = requestAnimationFrame(measure);
+    };
+
+    animationFrame = requestAnimationFrame(measure);
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      source.disconnect();
+      analyser.disconnect();
+      void context.close();
+      icon.style.setProperty("--microphone-level", "0%");
+    };
+  }, [muted, stream]);
+
+  if (muted) return <MicOff size={18} />;
+
+  return (
+    <span
+      ref={iconRef}
+      className="microphone-level-icon"
+      style={{ "--microphone-level": "0%" } as CSSProperties}
+      aria-hidden="true"
+    >
+      <Mic className="microphone-icon-base" size={18} />
+      <span className="microphone-level-fill">
+        <Mic size={18} />
+      </span>
+    </span>
+  );
+}
 
 function SettingsDialog({
   open,
@@ -449,6 +526,7 @@ export default function ShareApp() {
   const [chatOpen, setChatOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [micMuted, setMicMuted] = useState(true);
+  const [microphoneStream, setMicrophoneStream] = useState<MediaStream | null>(null);
   const [copied, setCopied] = useState(false);
   const [dockPosition, setDockPosition] = useState({ x: 20, y: 20 });
   const [clientId, setClientId] = useState("");
@@ -594,6 +672,7 @@ export default function ShareApp() {
     chatOpenRef.current = false;
     setChatOpen(false);
     setMicMuted(true);
+    setMicrophoneStream(null);
     setViewerCount(0);
     setError("");
     setNotice("");
@@ -657,6 +736,7 @@ export default function ShareApp() {
           return;
         case "mic":
           setMicMuted(event.muted);
+          setMicrophoneStream(event.stream);
           return;
         case "error":
           setError(event.message);
@@ -1224,7 +1304,7 @@ export default function ShareApp() {
           }
           aria-label={micMuted ? "Unmute microphone" : "Mute microphone"}
         >
-          {micMuted ? <MicOff size={18} /> : <Mic size={18} />}
+          <MicrophoneLevelIcon stream={microphoneStream} muted={micMuted} />
         </button>
         {role === "creator" && (
           <button

@@ -49,7 +49,7 @@ export type SessionEvent =
   | { type: "drawing-instruction"; senderId: string; instruction: DrawingInstruction }
   | { type: "remote-stream"; stream: MediaStream | null }
   | { type: "creator-audio"; stream: MediaStream | null }
-  | { type: "mic"; muted: boolean }
+  | { type: "mic"; muted: boolean; stream: MediaStream | null }
   | { type: "error"; message: string }
   | { type: "ended"; reason: "presenter" | "terminated" | "unauthorized" | "gave-up" };
 
@@ -230,7 +230,7 @@ export class SessionClient {
     const existing = this.microphone?.getAudioTracks()[0];
     if (existing) {
       existing.enabled = !existing.enabled;
-      this.emit({ type: "mic", muted: !existing.enabled });
+      this.emit({ type: "mic", muted: !existing.enabled, stream: this.microphone });
       return;
     }
     try {
@@ -238,7 +238,7 @@ export class SessionClient {
         audio: { echoCancellation: true, noiseSuppression: true },
       });
       this.microphone = mic;
-      this.emit({ type: "mic", muted: false });
+      this.emit({ type: "mic", muted: false, stream: mic });
       if (this.role === "creator") {
         // Not yet relaying (no viewer): the mic is picked up by the next publish.
         if (!this.connection) return;
@@ -257,7 +257,7 @@ export class SessionClient {
     } catch (error) {
       this.microphone?.getTracks().forEach((track) => track.stop());
       this.microphone = null;
-      this.emit({ type: "mic", muted: true });
+      this.emit({ type: "mic", muted: true, stream: null });
       this.emit({
         type: "error",
         message: error instanceof Error ? error.message : "Microphone access failed",
@@ -475,7 +475,7 @@ export class SessionClient {
       this.microphone?.getAudioTracks().forEach((track) => {
         track.enabled = false;
       });
-      this.emit({ type: "mic", muted: true });
+      this.emit({ type: "mic", muted: true, stream: this.microphone });
     }
   }
 
