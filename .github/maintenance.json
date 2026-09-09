@@ -1,0 +1,20 @@
+{
+  "workflow": "image-scan.yml",
+  "images": [
+    {
+      "ref": "ghcr.io/clammet/showmeplease:latest",
+      "scope": "published image",
+      "sarif": true,
+      "category": ".github/workflows/image-scan.yml:trivy"
+    }
+  ],
+  "build_workflow": "docker-publish.yml",
+  "filesystem": true,
+  "ci_workflow": "ci.yml",
+  "retry_workflows": [
+    "renovate.yml",
+    "image-scan.yml",
+    "ci.yml",
+    "docker-publish.yml"
+  ]
+}
