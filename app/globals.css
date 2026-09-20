@@ -541,8 +541,25 @@ select:focus-visible,
   pointer-events: none;
 }
 
-.laser-dot,
-.laser-afterimage {
+.laser-trail {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.laser-segment {
+  animation-name: laser-trail-fade;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@keyframes laser-trail-fade {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.laser-dot {
   position: absolute;
   display: block;
   border-radius: 50%;
@@ -940,6 +957,12 @@ select:focus-visible,
   overflow-wrap: anywhere;
 }
 
+.chat-message a {
+  color: var(--green);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .chat-composer {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1115,7 +1138,9 @@ select:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
+  /* The laser's opacity fade communicates its lifetime without adding motion.
+     Fast-forwarding it would hide the trail as soon as a segment appears. */
+  *:not(.laser-segment),
   *::before,
   *::after {
     scroll-behavior: auto !important;

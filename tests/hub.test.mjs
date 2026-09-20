@@ -276,9 +276,10 @@ test("annotations are host-gated, synchronized as vectors, snapshotted, and clea
 
   viewer.socket.receive({
     type: "annotation",
-    instruction: { kind: "laser-move", color: "#34c759", point: { x: 0.8, y: 0.1 } },
+    instruction: { kind: "laser-move", trailId: "trail-1", color: "#34c759", point: { x: 0.8, y: 0.1 } },
   });
   assert.equal(creator.last("annotation").instruction.kind, "laser-move");
+  assert.equal(creator.last("annotation").instruction.trailId, "trail-1");
   assert.equal(hub.room(code).drawings.size, 2, "laser trails are transient");
 
   const lateViewer = joinViewer(hub, code, "viewer-2");

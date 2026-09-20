@@ -8,23 +8,17 @@ import type {
   DrawingStroke,
 } from "@/lib/annotations";
 
+import {
+  LASER_DOT_SIZE_PX,
+  LASER_TRAIL_WIDTH_PX,
+  LASER_TRAIL_HISTORY_MS,
+  LASER_SAMPLE_INTERVAL_MS,
+  latestLaserMarks,
+  laserSegments,
+  type LaserMark,
+} from "@/lib/laser";
+
 export type AnnotationTool = "laser" | "pencil" | null;
-
-// Laser tuning: fixed pixel sizes keep the dots circular at every video aspect ratio.
-export const LASER_DOT_SIZE_PX = 10;
-export const LASER_AFTERIMAGE_SIZE_PX = 6;
-export const LASER_TRAIL_HISTORY_MS = 1000;
-export const LASER_POINTER_IDLE_DURATION_MS = 1000;
-export const LASER_CLOCK_INTERVAL_MS = 33;
-export const LASER_SAMPLE_INTERVAL_MS = 16;
-
-export type LaserMark = {
-  id: number;
-  senderId: string;
-  color: string;
-  point: AnnotationPoint;
-  at: number;
-};
 
 type Frame = { left: number; top: number; width: number; height: number };
 
@@ -82,7 +76,11 @@ export default function AnnotationLayer({
   const [frame, setFrame] = useState<Frame | null>(null);
   const activeStroke = useRef<{ id: string; pointerId: number } | null>(null);
   const lastPencilPoint = useRef<AnnotationPoint | null>(null);
-  const lastLaser = useRef<{ point: AnnotationPoint; at: number } | null>(null);
+  const lastLaser = useRef<{ point: AnnotationPoint; at: number; trailId: string } | null>(null);
+
+  useEffect(() => {
+    lastLaser.current = null;
+  }, [activeTool, color]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -118,8 +116,12 @@ export default function AnnotationLayer({
     ) {
       return;
     }
-    lastLaser.current = { point, at: now };
-    onInstruction({ kind: "laser-move", color, point });
+    const trailId = previous && now - previous.at < LASER_TRAIL_HISTORY_MS
+      ? previous.trailId
+      : crypto.randomUUID();
+    if (onInstruction({ kind: "laser-move", trailId, color, point })) {
+      lastLaser.current = { point, at: now, trailId };
+    }
   };
 
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -178,13 +180,7 @@ export default function AnnotationLayer({
 
   if (!frame) return null;
 
-  const latestBySender = new Map<string, LaserMark>();
-  for (const mark of laserMarks) {
-    const latest = latestBySender.get(mark.senderId);
-    if (!latest || mark.at > latest.at || (mark.at === latest.at && mark.id > latest.id)) {
-      latestBySender.set(mark.senderId, mark);
-    }
-  }
+  const latestBySender = latestLaserMarks(laserMarks);
 
   return (
     <>
@@ -196,8 +192,15 @@ export default function AnnotationLayer({
         aria-label={activeTool ? `${activeTool} annotation surface` : "Shared annotations"}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={finishStroke}
-        onPointerCancel={finishStroke}
+        onPointerUp={(event) => {
+          finishStroke(event);
+          if (event.pointerType !== "mouse") lastLaser.current = null;
+        }}
+        onPointerLeave={() => { lastLaser.current = null; }}
+        onPointerCancel={(event) => {
+          finishStroke(event);
+          lastLaser.current = null;
+        }}
       >
         <g className="pencil-strokes">
           {strokes.map((stroke) => (
@@ -215,13 +218,28 @@ export default function AnnotationLayer({
         </g>
       </svg>
       <div className="laser-layer" style={frame} aria-hidden="true">
-        {laserMarks.map((mark) => {
-          const latest = latestBySender.get(mark.senderId);
-          if (!latest) return null;
-          const newest = latest.id === mark.id;
-          const historyAge = latest.at - mark.at;
-          if (historyAge > LASER_TRAIL_HISTORY_MS) return null;
-          const size = newest ? LASER_DOT_SIZE_PX : LASER_AFTERIMAGE_SIZE_PX;
+        <svg className="laser-trail" viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`} preserveAspectRatio="none">
+          {laserSegments(laserMarks).map(({ from, to }) => (
+            <line
+              key={to.id}
+              className="laser-segment"
+              x1={from.point.x * SVG_SIZE}
+              y1={from.point.y * SVG_SIZE}
+              x2={to.point.x * SVG_SIZE}
+              y2={to.point.y * SVG_SIZE}
+              stroke={to.color}
+              strokeWidth={LASER_TRAIL_WIDTH_PX}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+              style={{
+                animationDuration: `${LASER_TRAIL_HISTORY_MS}ms`,
+                // Stable for this segment: rerenders must not restart its fade.
+                animationDelay: `${from.at - to.at}ms`,
+              }}
+            />
+          ))}
+        </svg>
+        {Array.from(latestBySender.values()).map((mark) => {
           const position = {
             left: `${mark.point.x * 100}%`,
             top: `${mark.point.y * 100}%`,
@@ -229,11 +247,11 @@ export default function AnnotationLayer({
           return (
             <span
               key={mark.id}
-              className={newest ? "laser-dot" : "laser-afterimage"}
+              className="laser-dot"
               style={{
                 ...position,
-                width: size,
-                height: size,
+                width: LASER_DOT_SIZE_PX,
+                height: LASER_DOT_SIZE_PX,
                 color: mark.color,
                 backgroundColor: mark.color,
               }}

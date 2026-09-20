@@ -36,6 +36,7 @@ export type DrawingInstruction =
     }
   | {
       kind: "laser-move";
+      trailId?: string;
       color: string;
       point: AnnotationPoint;
     }
@@ -77,8 +78,16 @@ export function parseDrawingInstruction(value: unknown): DrawingInstruction | nu
 
   if (candidate.kind === "laser-move") {
     const point = parseAnnotationPoint(candidate.point);
+    const trailId = candidate.trailId;
     if (!point || !isAnnotationColor(candidate.color)) return null;
-    return { kind: "laser-move", color: candidate.color, point };
+    if (trailId !== undefined &&
+      (typeof trailId !== "string" || !STROKE_ID_PATTERN.test(trailId))) {
+      return null;
+    }
+    return {
+      kind: "laser-move", color: candidate.color, point,
+      ...(trailId === undefined ? {} : { trailId }),
+    };
   }
 
   if (typeof candidate.strokeId !== "string" || !STROKE_ID_PATTERN.test(candidate.strokeId)) {

@@ -59,13 +59,14 @@ import {
   type SessionStatus,
 } from "@/lib/session";
 import AccountControls from "./AccountControls";
-import AnnotationLayer, {
+import ChatMessageText from "./ChatMessageText";
+import AnnotationLayer, { type AnnotationTool } from "./AnnotationLayer";
+import {
   LASER_CLOCK_INTERVAL_MS,
-  LASER_POINTER_IDLE_DURATION_MS,
-  LASER_TRAIL_HISTORY_MS,
-  type AnnotationTool,
+  appendLaserMark,
+  pruneLaserMarks,
   type LaserMark,
-} from "./AnnotationLayer";
+} from "@/lib/laser";
 
 type AppMode = "landing" | "session";
 
@@ -477,7 +478,7 @@ function ChatPane({
                 })}
               </time>
             </div>
-            <p>{message.text}</p>
+            <p><ChatMessageText text={message.text} tabIndex={open ? undefined : -1} /></p>
           </div>
         ))}
         <div ref={endRef} />
@@ -621,23 +622,7 @@ export default function ShareApp() {
     if (!hasLaserMarks) return;
     const timer = window.setInterval(() => {
       const now = Date.now();
-      setLaserMarks((current) => {
-        const latestBySender = new Map<string, LaserMark>();
-        for (const mark of current) {
-          const latest = latestBySender.get(mark.senderId);
-          if (!latest || mark.at > latest.at || (mark.at === latest.at && mark.id > latest.id)) {
-            latestBySender.set(mark.senderId, mark);
-          }
-        }
-        const next = current.filter((mark) => {
-          const latest = latestBySender.get(mark.senderId);
-          const lifetime = latest?.id === mark.id
-            ? LASER_POINTER_IDLE_DURATION_MS
-            : LASER_TRAIL_HISTORY_MS;
-          return now - mark.at < lifetime;
-        });
-        return next.length === current.length ? current : next;
-      });
+      setLaserMarks((current) => pruneLaserMarks(current, now));
     }, LASER_CLOCK_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [hasLaserMarks]);
@@ -716,11 +701,12 @@ export default function ShareApp() {
             const nextMark: LaserMark = {
               id: laserMarkIdRef.current++,
               senderId: event.senderId,
+              trailId: event.instruction.trailId,
               color: event.instruction.color,
               point: event.instruction.point,
               at: Date.now(),
             };
-            setLaserMarks((current) => [...current.slice(-239), nextMark]);
+            setLaserMarks((current) => appendLaserMark(current, nextMark));
             return;
           }
           if (event.instruction.kind === "clear") setLaserMarks([]);
