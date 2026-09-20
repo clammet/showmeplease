@@ -168,10 +168,10 @@ importers:
     dependencies:
       '@clammet/convex-googly-auth':
         specifier: 1.0.1
-        version: 1.0.1(convex@1.45.0(react@19.3.0))(react@19.3.0)
+        version: 1.0.1(convex@1.46.0(react@19.3.0))(react@19.3.0)
       convex:
-        specifier: 1.45.0
-        version: 1.45.0(react@19.3.0)
+        specifier: 1.46.0
+        version: 1.46.0(react@19.3.0)
       lucide-react:
         specifier: 1.46.0
         version: 1.46.0(react@19.3.0)
@@ -1324,8 +1324,8 @@ packages:
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
-  convex@1.45.0:
-    resolution: {integrity: sha512-AV3B56Ptu/14d76g3urBJ50dwpiZa6uJaLT84OWox5aCwZIJiuAamdjv3lLHDzs8vv5kC31anEZohhUe3qJ2bA==}
+  convex@1.46.0:
+    resolution: {integrity: sha512-dhBwDQTZDOhi5SUGAX17EWNehCdNq6/UFrSL0eLZuGfMkdsQbCVWVRZCzbZ5CF+/pgvoGxtApbEoTSipqL4JTw==}
     engines: {node: '>=20.0.0', npm: '>=7.0.0'}
     hasBin: true
     peerDependencies:
@@ -2912,9 +2912,9 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@clammet/convex-googly-auth@1.0.1(convex@1.45.0(react@19.3.0))(react@19.3.0)':
+  '@clammet/convex-googly-auth@1.0.1(convex@1.46.0(react@19.3.0))(react@19.3.0)':
     dependencies:
-      convex: 1.45.0(react@19.3.0)
+      convex: 1.46.0(react@19.3.0)
       react: 19.3.0
 
   '@esbuild/aix-ppc64@0.27.0':
@@ -3744,7 +3744,7 @@ snapshots:
 
   convert-source-map@2.0.0: {}
 
-  convex@1.45.0(react@19.3.0):
+  convex@1.46.0(react@19.3.0):
     dependencies:
       esbuild: 0.27.0
       prettier: 3.9.6
