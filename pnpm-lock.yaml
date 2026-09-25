@@ -186,8 +186,8 @@ importers:
         specifier: 9.39.5
         version: 9.39.5
       '@next/eslint-plugin-next':
-        specifier: 16.3.5
-        version: 16.3.5(eslint@9.39.5(jiti@2.7.0)(supports-color@10.2.2))
+        specifier: 16.3.6
+        version: 16.3.6(eslint@9.39.5(jiti@2.7.0)(supports-color@10.2.2))
       '@tailwindcss/postcss':
         specifier: 4.3.3
         version: 4.3.3
@@ -735,8 +735,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@next/eslint-plugin-next@16.3.5':
-    resolution: {integrity: sha512-PGfSeItHJ12DH8t+6sEbuMe59NE5rAhCfgk06QKTH2ne9VUL1JlaXdYXY3B8RaiF2SO50rDYvd39TulP6A6xZQ==}
+  '@next/eslint-plugin-next@16.3.6':
+    resolution: {integrity: sha512-jowwDX+7DOlDIjJLgTMxudw+k37QnWu1JkZLkSi9MaJBfDYcfhAPMKBhXL0idYzFN/AGg//axnOR4cLkHX/Rng==}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -3166,7 +3166,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@next/eslint-plugin-next@16.3.5(eslint@9.39.5(jiti@2.7.0)(supports-color@10.2.2))':
+  '@next/eslint-plugin-next@16.3.6(eslint@9.39.5(jiti@2.7.0)(supports-color@10.2.2))':
     dependencies:
       '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.5(jiti@2.7.0)(supports-color@10.2.2))
       fast-glob: 3.3.1
