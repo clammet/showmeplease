@@ -1,0 +1,15 @@
+.laser-lab { padding: 24px; font-family: Arial, sans-serif; }
+.laser-lab h1 { font-size: 26px; font-weight: 700; }
+.laser-lab p { margin: 10px 0 20px; }
+.laser-lab fieldset { display: flex; align-items: end; flex-wrap: wrap; gap: 16px; }
+.laser-lab label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.laser-lab select, .laser-lab button { padding: 8px; border: 1px solid #a9b7b0; border-radius: 5px; }
+.laser-lab button { background: #23543e; color: white; cursor: pointer; }
+.laser-lab button:disabled { opacity: 0.5; }
+.lab-previews { display: flex; flex-wrap: wrap; gap: 24px; margin: 20px 0; }
+.lab-previews h2 { margin-bottom: 8px; font-weight: 700; }
+.lab-previews small { font-weight: 400; }
+.lab-preview { overflow: hidden; outline: 1px solid #a9b7b0; }
+.lab-preview iframe { transform-origin: top left; border: 0; display: block; max-width: none; }
+.laser-lab pre { max-height: 280px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+.surface-readout { position: fixed; bottom: 8px; left: 8px; color: white; background: #0009; pointer-events: none; font: 12px monospace; }

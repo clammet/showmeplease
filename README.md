@@ -89,11 +89,15 @@ pnpm build          # static frontend export + bundled backend (dist/)
 pnpm start          # run the built backend (serves dist/client)
 pnpm test           # unit tests, then build + integration tests against the built backend
 pnpm test:unit      # hub/ledger unit tests only (no build)
+pnpm test:laser     # standalone fixed-grid browser lab (no screen capture/backend)
 pnpm typecheck
 pnpm lint
 pnpm image:build    # docker build
 pnpm image:publish  # multi-arch buildx push (IMAGE_NAME=… IMAGE_TAG=…)
 ```
+
+The [laser coordinate lab](tests/laser-browser/README.md) checks sender/recipient
+alignment across content aspect ratios, viewport sizes, and sidebar changes.
 
 ## Docker deployment
 

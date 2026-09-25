@@ -7,9 +7,14 @@
   ],
   "osvVulnerabilityAlerts": true,
   "minimumReleaseAge": "3 days",
-  "platformAutomerge": false,
+  "platformAutomerge": true,
+  "internalChecksFilter": "strict",
+  "statusCheckWhen": {
+    "artifactError": "always"
+  },
   "dependencyDashboard": true,
   "lockFileMaintenance": {
+    "minimumReleaseAge": null,
     "enabled": true,
     "automerge": true,
     "rebaseWhen": "behind-base-branch"
