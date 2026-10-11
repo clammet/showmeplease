@@ -39,7 +39,7 @@
     "@types/ws": "8.18.2",
     "@vitejs/plugin-react": "6.1.2",
     "@vitejs/plugin-rsc": "0.5.36",
-    "concurrently": "10.0.5",
+    "concurrently": "10.0.6",
     "esbuild": "0.28.2",
     "eslint": "9.39.5",
     "eslint-plugin-jsx-a11y": "6.10.2",
