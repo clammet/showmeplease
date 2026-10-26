@@ -7,9 +7,9 @@ ENV PATH=$PNPM_HOME:$PATH
 
 WORKDIR /app
 
-# renovate: datasource=npm depName=corepack
-ARG COREPACK_VERSION=0.36.0
-RUN npm install --global corepack@${COREPACK_VERSION} && corepack enable
+COPY build-tools/package.json build-tools/package-lock.json build-tools/.npmrc /opt/build-tools/
+RUN npm ci --prefix /opt/build-tools --ignore-scripts \
+    && /opt/build-tools/node_modules/.bin/corepack enable --install-directory /usr/local/bin
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
