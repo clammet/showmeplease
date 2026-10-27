@@ -208,11 +208,6 @@ turns each upstream release into a PR:
 - Anything built from source in the future gets the same treatment: pinned
   version plus a checksum verified before use.
 
-The plain pnpm version in `devEngines.packageManager` lets Renovate install
-the tool while `packageManager` retains its checksum. Shared policy updates
-both fields together. `onFail: ignore` permits npm-based bootstrap commands;
-Corepack continues to enforce the checksum pin.
-
 `renovate.json5` holds the policy; `.github/workflows/renovate.yml` runs
 Renovate every 4 hours. CI (lint, build, tests, and a full image build) runs
 on every PR. Minor/patch/pin/digest PRs merge via GitHub auto-merge once all
