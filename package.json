@@ -23,7 +23,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern convex/_generated"
   },
   "dependencies": {
-    "@clammet/convex-googly-auth": "1.0.2",
+    "@clammet/convex-googly-auth": "1.0.3",
     "convex": "1.48.0",
     "lucide-react": "1.62.0",
     "react": "19.3.1",
