@@ -15,7 +15,7 @@
 
 services:
   app:
-    image: ghcr.io/clammet/showmeplease:latest@sha256:393c267f2db6961395d1a09cafd8ff96fdf1051f7ae6ba1fda3c9a1a1a2ff890
+    image: ghcr.io/clammet/showmeplease:latest@sha256:86226d896791435d9dd69f637f52e4485b72e66314efc4d1c780607e2e129099
     restart: unless-stopped
     ports:
       - "8080:8080"
