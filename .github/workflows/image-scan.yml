@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-    - uses: yuzuyuzuyu/repo-automation/actions/security-scan@61eeba819e154e647549baa5172b3b8c2419800e # v1.0.26
+    - uses: yuzuyuzuyu/repo-automation/actions/security-scan@3e85c20261f690fea5df6ca4d84e150e40acb6fa # v1.0.27
       with:
         upload-sarif: 'true'
         rebuild-workflow: docker-publish.yml
